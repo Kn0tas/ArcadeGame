@@ -41,8 +41,8 @@ All core scripts and the sonar shader have been scaffolded. The codebase compile
 | **Guard AI**           | ✅ Complete | `GuardStateMachine.cs`, `GuardHearing.cs`, `GuardPatrol.cs`                              |
 | **Environment**        | ✅ Complete | `AmbientNoiseSource.cs`, `Collectible.cs`                                                |
 | **UI**                 | ✅ Complete | `HUDController.cs`                                                                       |
-| **Unity Project Init** | ⬜ Pending  | Requires manual Unity setup — see [Documentation](documentation.md)                      |
-| **Test Scene**         | ⬜ Pending  | Build first test room in Unity                                                           |
+| **Unity Project Init** | ✅ Complete | Compiles in Unity 6 (RenderGraph API)                                                    |
+| **Test Scene**         | ✅ Complete | Basic TestRoom scene created                                                             |
 | **Art / Audio**        | ⬜ Pending  | Phase 3                                                                                  |
 
 > 📄 **For full setup instructions and development history, see [documentation.md](documentation.md).**

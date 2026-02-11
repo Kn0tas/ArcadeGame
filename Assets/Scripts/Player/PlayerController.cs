@@ -102,8 +102,8 @@ namespace EchoThief.Player
         {
             float speed = _isRunning ? _runSpeed : _sneakSpeed;
             Vector3 velocity = _moveInput * speed;
-            velocity.y = _rb.velocity.y; // preserve gravity
-            _rb.velocity = velocity;
+            velocity.y = _rb.linearVelocity.y; // preserve gravity
+            _rb.linearVelocity = velocity;
         }
 
         /// <summary>

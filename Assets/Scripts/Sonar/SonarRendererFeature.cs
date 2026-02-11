@@ -1,16 +1,13 @@
 using UnityEngine;
 using UnityEngine.Rendering;
+using UnityEngine.Rendering.RenderGraphModule;
 using UnityEngine.Rendering.Universal;
 
 namespace EchoThief.Sonar
 {
     /// <summary>
     /// URP Scriptable Renderer Feature that injects the sonar post-process pass.
-    /// 
-    /// Setup:
-    /// 1. Add this renderer feature to your URP Renderer asset.
-    /// 2. Assign the SonarPostProcess material (using the SonarPostProcess shader).
-    /// 3. The SonarManager pushes pulse data to global shader properties each frame.
+    /// Updated for Unity 6 (6000.0+) using full RenderGraph API with RasterRenderPass.
     /// </summary>
     public class SonarRendererFeature : ScriptableRendererFeature
     {
@@ -20,7 +17,6 @@ namespace EchoThief.Sonar
             [Tooltip("Material using the SonarPostProcess shader.")]
             public Material sonarMaterial;
 
-            [Tooltip("When in the render pipeline this pass executes.")]
             public RenderPassEvent renderPassEvent = RenderPassEvent.AfterRenderingPostProcessing;
         }
 
@@ -40,51 +36,75 @@ namespace EchoThief.Sonar
                 Debug.LogWarning("[SonarRendererFeature] Sonar material is not assigned.");
                 return;
             }
-
             renderer.EnqueuePass(_renderPass);
         }
     }
 
-    /// <summary>
-    /// Custom render pass that applies the sonar post-process effect as a full-screen blit.
-    /// </summary>
     public class SonarRenderPass : ScriptableRenderPass
     {
+        private class PassData
+        {
+            public Material material;
+            public TextureHandle source;
+        }
+
         private readonly SonarRendererFeature.Settings _settings;
-        private RenderTargetIdentifier _source;
-        private RenderTargetHandle _tempTexture;
 
         public SonarRenderPass(SonarRendererFeature.Settings settings)
         {
             _settings = settings;
-            _tempTexture.Init("_SonarTempTexture");
         }
 
-        public override void OnCameraSetup(CommandBuffer cmd, ref RenderingData renderingData)
-        {
-            _source = renderingData.cameraData.renderer.cameraColorTarget;
-        }
-
-        public override void Execute(ScriptableRenderContext context, ref RenderingData renderingData)
+        public override void RecordRenderGraph(RenderGraph renderGraph, ContextContainer frameData)
         {
             if (_settings.sonarMaterial == null) return;
 
-            CommandBuffer cmd = CommandBufferPool.Get("SonarPostProcess");
+            UniversalResourceData resourceData = frameData.Get<UniversalResourceData>();
+            
+            // Cannot blit from/to the backbuffer directly
+            if (resourceData.isActiveTargetBackBuffer) return;
 
-            RenderTextureDescriptor desc = renderingData.cameraData.cameraTargetDescriptor;
-            desc.depthBufferBits = 0;
+            TextureHandle source = resourceData.activeColorTexture;
 
-            cmd.GetTemporaryRT(_tempTexture.id, desc);
-            cmd.Blit(_source, _tempTexture.Identifier(), _settings.sonarMaterial);
-            cmd.Blit(_tempTexture.Identifier(), _source);
-            cmd.ReleaseTemporaryRT(_tempTexture.id);
+            // Create temporary texture for the effect output
+            var desc = renderGraph.GetTextureDesc(source);
+            desc.name = "_SonarTempTexture";
+            desc.clearBuffer = false;
+            TextureHandle dest = renderGraph.CreateTexture(desc);
 
-            context.ExecuteCommandBuffer(cmd);
-            CommandBufferPool.Release(cmd);
-        }
+                // Pass 1: Apply Sonar Effect
+                using (var builder = renderGraph.AddRasterRenderPass<PassData>("Sonar Pass", out var passData))
+                {
+                    passData.material = _settings.sonarMaterial;
+                    passData.source = source;
+                    
+                    // Read from source, Write to destination
+                    builder.UseTexture(source);
+                    builder.SetRenderAttachment(dest, 0);
+                    
+                    builder.SetRenderFunc((PassData data, RasterGraphContext context) =>
+                    {
+                        // Blitter.BlitTexture executes a fullscreen triangle draw
+                        // Source texture is bound to _BlitTexture by default in URP's Blit.hlsl
+                        Blitter.BlitTexture(context.cmd, data.source, new Vector4(1, 1, 0, 0), data.material, 0);
+                    });
+                }
 
-        public override void OnCameraCleanup(CommandBuffer cmd)
-        {
+            // Pass 2: Copy Back to Camera Target
+            using (var builder = renderGraph.AddRasterRenderPass<PassData>("Sonar Copy Back", out var passData))
+            {
+                // No material needed for simple copy, or use null to trigger default blit
+                passData.material = null; 
+                passData.source = dest;
+
+                builder.UseTexture(dest);
+                builder.SetRenderAttachment(source, 0);
+
+                builder.SetRenderFunc((PassData data, RasterGraphContext context) =>
+                {
+                    Blitter.BlitTexture(context.cmd, data.source, new Vector4(1, 1, 0, 0), 0.0f, false);
+                });
+            }
         }
     }
 }

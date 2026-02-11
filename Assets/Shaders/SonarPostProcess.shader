@@ -2,7 +2,7 @@ Shader "EchoThief/SonarPostProcess"
 {
     Properties
     {
-        _MainTex ("Main Texture", 2D) = "black" {}
+        [HideInInspector] _BlitTexture ("Blit Texture", 2D) = "black" {}
         _EdgeDetectionThreshold ("Edge Detection Threshold", Range(0.001, 0.1)) = 0.01
         _GlowIntensity ("Glow Intensity", Range(0.5, 5.0)) = 2.0
         _BackgroundColor ("Background Color", Color) = (0, 0, 0, 1)
@@ -26,11 +26,10 @@ Shader "EchoThief/SonarPostProcess"
 
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/DeclareDepthTexture.hlsl"
+            #include "Packages/com.unity.render-pipelines.core/Runtime/Utilities/Blit.hlsl"
 
             // -- Textures --
-            TEXTURE2D(_MainTex);
-            SAMPLER(sampler_MainTex);
-            float4 _MainTex_TexelSize;
+            // _BlitTexture is declared in Blit.hlsl
 
             // -- Properties --
             float _EdgeDetectionThreshold;
@@ -48,25 +47,8 @@ Shader "EchoThief/SonarPostProcess"
             float _SonarPulseFades[MAX_PULSES];      // 1 = full, 0 = gone
             float4 _SonarPulseColors[MAX_PULSES];    // rgba neon color
 
-            struct Attributes
-            {
-                float4 positionOS : POSITION;
-                float2 uv : TEXCOORD0;
-            };
-
-            struct Varyings
-            {
-                float4 positionCS : SV_POSITION;
-                float2 uv : TEXCOORD0;
-            };
-
-            Varyings Vert(Attributes input)
-            {
-                Varyings output;
-                output.positionCS = TransformObjectToHClip(input.positionOS.xyz);
-                output.uv = input.uv;
-                return output;
-            }
+            // Vert is provided by Blit.hlsl
+            // It outputs Varyings with positionCS and texcoord
 
             // Reconstruct world position from depth buffer
             float3 ReconstructWorldPos(float2 uv)
@@ -79,7 +61,7 @@ Shader "EchoThief/SonarPostProcess"
             // Simple depth-based edge detection (Sobel-like)
             float EdgeDetection(float2 uv)
             {
-                float2 texelSize = _MainTex_TexelSize.xy;
+                float2 texelSize = _BlitTexture_TexelSize.xy;
 
                 float depthCenter = SampleSceneDepth(uv);
                 float depthLeft   = SampleSceneDepth(uv + float2(-texelSize.x, 0));
@@ -96,7 +78,7 @@ Shader "EchoThief/SonarPostProcess"
 
             float4 Frag(Varyings input) : SV_Target
             {
-                float2 uv = input.uv;
+                float2 uv = input.texcoord;
                 float3 worldPos = ReconstructWorldPos(uv);
                 float edge = EdgeDetection(uv);
 
@@ -137,7 +119,7 @@ Shader "EchoThief/SonarPostProcess"
                 finalColor *= edgeMix * totalVisibility;
 
                 // Add a subtle base scene color in sonar-lit areas (so geometry has some fill)
-                float3 sceneColor = SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, uv).rgb;
+                float3 sceneColor = SAMPLE_TEXTURE2D(_BlitTexture, sampler_LinearClamp, uv).rgb;
                 finalColor += sceneColor * totalVisibility * 0.05;
 
                 // Background where nothing is visible
