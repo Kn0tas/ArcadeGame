@@ -55,5 +55,11 @@ namespace EchoThief.AI
 
             _stateMachine.OnNoiseHeard(perceivedOrigin, noise.Loudness);
         }
+
+        private void OnDrawGizmosSelected()
+        {
+            Gizmos.color = Color.yellow;
+            Gizmos.DrawWireSphere(transform.position, _baseHearingRange);
+        }
     }
 }

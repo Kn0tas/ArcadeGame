@@ -1,5 +1,6 @@
 using UnityEngine;
 using System;
+using EchoThief.Environment;
 
 namespace EchoThief.Core
 {
@@ -46,6 +47,23 @@ namespace EchoThief.Core
                 return;
             }
             Instance = this;
+        }
+
+        private void Start()
+        {
+            // Auto-initialize level tracking based on scene objects
+            // This fixes the bug where total gems started at 0
+            var collectibles = FindObjectsOfType<Collectible>();
+            int totalGemCount = 0;
+            foreach (var c in collectibles)
+            {
+                if (c.Type == CollectibleType.Gem)
+                {
+                    totalGemCount++;
+                }
+            }
+
+            InitLevel(totalGemCount, _parTime);
         }
 
         /// <summary>
