@@ -1,6 +1,6 @@
 using UnityEngine;
 using UnityEngine.UI;
-using TMPro;
+// using TMPro; // Commented out to fix compilation errors
 using EchoThief.Core;
 using EchoThief.Player;
 
@@ -26,13 +26,13 @@ namespace EchoThief.UI
         [SerializeField] private Image _pingCooldownRing;
 
         [Header("Gem Counter")]
-        [SerializeField] private TextMeshProUGUI _gemCounterText;
+        [SerializeField] private Text _gemCounterText;
         [SerializeField] private CanvasGroup _gemCounterGroup;
         private float _gemDisplayTimer;
         private const float GemDisplayDuration = 3f;
 
         [Header("Noise Maker Count")]
-        [SerializeField] private TextMeshProUGUI _noiseMakerText;
+        [SerializeField] private Text _noiseMakerText;
 
         [Header("Alert Meter")]
         [Tooltip("Fill image for the alert meter (red bar).")]

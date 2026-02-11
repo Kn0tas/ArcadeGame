@@ -90,6 +90,25 @@ Created remaining scripts:
 1. **`AmbientNoiseSource.cs`** — Periodic sonar pings from environmental objects (drips, clocks)
 2. **`Collectible.cs`** — Gem/artifact/keycard pickup with type enum and scoring integration
 3. **`HUDController.cs`** — Minimal HUD: ping cooldown ring, gem counter, noise maker count, alert meter
+   - **Note:** Updated to use `UnityEngine.UI` instead of `TMPro` for Unity 6 compatibility.
+
+### Step 9 — Unity 6 Migration & Compilation Fixes
+
+Addressed API changes in **Unity 6 (6000.0+)**:
+
+1.  **SonarRendererFeature.cs**:
+    - **Issue:** Using internal `RenderGraphUtils` and missing `AddBlitPass`.
+    - **Fix:** Rewrote to use the standard public `RenderGraph` API with `AddRasterRenderPass` and `Blitter.BlitTexture`.
+    - **Fix:** Removed explicit `AccessFlags` from `UseTexture`/`SetRenderAttachment` calls as Unity 6 infers them.
+2.  **SonarPostProcess.shader**:
+    - **Issue:** Redefinition of `_BlitTexture_TexelSize`.
+    - **Fix:** Removed manual declaration (already provided by `Blit.hlsl`).
+3.  **HUDController.cs**:
+    - **Issue:** `TMPro` namespace missing (Unity 6 package restructuring).
+    - **Fix:** Replaced `TextMeshProUGUI` with standard `UnityEngine.UI.Text` to resolve compilation without extra dependencies.
+4.  **Input System**:
+    - **Issue:** `PlayerController` uses legacy `Input` class.
+    - **Fix:** Project settings documentation updated to require "Active Input Handling: Both".
 
 ---
 
@@ -307,7 +326,14 @@ Go to **Window → Package Manager**:
 4. Create a new **Material** with shader `EchoThief/SonarPostProcess`
 5. Assign the material to the renderer feature
 
-#### 5. Camera Setup
+#### 5. Project Settings (Crucial for Unity 6)
+
+1.  **Input Handling**: Go to **Edit → Project Settings → Player → Other Settings**.
+    - Set **Active Input Handling** to **Both** (or **Input Manager (Old)**).
+    - _Reason:_ `PlayerController.cs` currently uses the legacy `Input` class.
+2.  **Tags**: Add a Tag named **Player** and assign it to your Player object.
+
+#### 6. Camera Setup
 
 1. Select the **Main Camera**
 2. Set **Background** → Solid Color → `#000000` (pure black)
