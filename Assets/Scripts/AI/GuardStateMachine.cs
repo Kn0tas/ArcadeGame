@@ -250,5 +250,30 @@ namespace EchoThief.AI
                 );
             }
         }
+
+        private void OnDrawGizmosSelected()
+        {
+            // Catch range
+            Gizmos.color = Color.red;
+            Gizmos.DrawWireSphere(transform.position, _catchDistance);
+
+            // Footstep sonar range
+            Gizmos.color = new Color(1f, 0.4f, 0f, 0.5f);
+            Gizmos.DrawWireSphere(transform.position, _footstepSonarRadius);
+
+            // Detection range (approximate for visualization)
+            if (_hearing != null)
+            {
+                // We'd need _hearing properties, but can visualize current state
+            }
+            
+            // Draw line to last heard position if suspicious/alerted
+            if (_currentState == GuardState.Suspicious || _currentState == GuardState.Alerted)
+            {
+                Gizmos.color = Color.magenta;
+                Gizmos.DrawLine(transform.position, _lastHeardPosition);
+                Gizmos.DrawWireSphere(_lastHeardPosition, 0.5f);
+            }
+        }
     }
 }
