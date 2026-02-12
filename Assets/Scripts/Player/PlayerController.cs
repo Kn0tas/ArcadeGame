@@ -167,5 +167,14 @@ namespace EchoThief.Player
 
             Debug.Log($"[Player] Threw noise maker! Remaining: {_noiseMakerCount}");
         }
+
+        /// <summary>
+        /// Add noise makers to inventory.
+        /// </summary>
+        public void AddNoiseMaker(int amount)
+        {
+            _noiseMakerCount += amount;
+            Debug.Log($"[Player] Picked up {amount} Noise Maker(s). Total: {_noiseMakerCount}");
+        }
     }
 }

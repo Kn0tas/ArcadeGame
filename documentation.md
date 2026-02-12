@@ -110,6 +110,14 @@ Addressed API changes in **Unity 6 (6000.0+)**:
     - **Issue:** `PlayerController` uses legacy `Input` class.
     - **Fix:** Project settings documentation updated to require "Active Input Handling: Both".
 
+### Step 10 — Noise Maker Implementation
+
+Implemented the throwable distraction mechanic:
+
+1.  **`NoiseMaker.cs`** — Script for the physical object. Emits a loud magenta noise event on collision and destroys itself.
+2.  **`PlayerController.cs`** — Added `AddNoiseMaker()` for inventory management.
+3.  **`Collectible.cs`** — Wired up `CollectibleType.NoiseMaker` to the player's inventory.
+
 ---
 
 ## 📁 File Structure
@@ -131,7 +139,8 @@ ArcadeGame/
     │   │   └── SonarRendererFeature.cs     ← URP renderer feature + render pass
     │   ├── Player/
     │   │   ├── PlayerController.cs         ← Movement, ping, throw
-    │   │   └── NoiseEmitter.cs             ← Generic noise emitter component
+    │   │   ├── NoiseEmitter.cs             ← Generic noise emitter component
+    │   │   └── NoiseMaker.cs               ← Thrown distraction object
     │   ├── AI/
     │   │   ├── GuardStateMachine.cs        ← Guard FSM (4 states)
     │   │   ├── GuardHearing.cs             ← Noise detection + perception
@@ -258,6 +267,16 @@ ArcadeGame/
 | Run    | WASD + Shift | 0.7 loudness  | Blue pulses every 0.4s |
 | Ping   | Space        | 0.5 loudness  | Cyan, radius 10        |
 | Throw  | E            | 0.8 at impact | Magenta at landing     |
+
+---
+
+### NoiseMaker (Player)
+
+Component on the throwable object prefab.
+
+- **Trigger:** `OnCollisionEnter` (if impact velocity > 2.0)
+- **Effect:** Emits a noise event (`Loudness: 0.8`, `Radius: 15`, `Color: Magenta`)
+- **Lifecycle:** Destroys itself 0.1s after impact
 
 ---
 

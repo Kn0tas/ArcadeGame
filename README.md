@@ -619,7 +619,7 @@ The HUD should be nearly invisible. Information is communicated through the game
 - [ ] Add guard patrol waypoint system
 - [ ] Make guards produce their own sonar pings (red) when walking
 - [ ] Add collectible gems
-- [ ] Add noise-maker throwables
+- [x] Add noise-maker throwables
 - [ ] **Playtest milestone:** Sneak past one guard, steal a gem, reach the exit
 
 ### Phase 3 — Polish & Juice (Week 5–6) 🟠

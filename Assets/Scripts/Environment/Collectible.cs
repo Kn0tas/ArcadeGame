@@ -73,8 +73,11 @@ namespace EchoThief.Environment
                     break;
 
                 case CollectibleType.NoiseMaker:
-                    // Add to player inventory (PlayerController handles count)
-                    // TODO: Wire to PlayerController.AddNoiseMaker()
+                    var playerController = player.GetComponent<EchoThief.Player.PlayerController>();
+                    if (playerController != null)
+                    {
+                        playerController.AddNoiseMaker(1);
+                    }
                     break;
 
                 case CollectibleType.KeyCard:
