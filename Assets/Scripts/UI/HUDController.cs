@@ -1,113 +1,90 @@
 using UnityEngine;
 using UnityEngine.UI;
-// using TMPro; // Commented out to fix compilation errors
-using EchoThief.Core;
 using EchoThief.Player;
+using EchoThief.Core;
 
 namespace EchoThief.UI
 {
     /// <summary>
-    /// Drives the minimal in-game HUD:
-    /// - Ping cooldown ring
-    /// - Gem counter
-    /// - Noise maker count
-    /// - Alert meter (only visible when guards are suspicious+)
-    /// 
-    /// All elements fade in/out contextually to keep the screen clean.
+    /// Minimal HUD. Uses UnityEvents from ScoreManager for gem count updates.
+    /// Polls PlayerController for ping cooldown and noise maker count (frame-dependent data).
+    /// All UI references except _playerController are optional — null refs are handled gracefully.
     /// </summary>
     public class HUDController : MonoBehaviour
     {
         [Header("References")]
-        [Tooltip("Reference to the player controller.")]
         [SerializeField] private PlayerController _playerController;
 
         [Header("Ping Cooldown")]
-        [Tooltip("Image component using 'Filled' type for the radial cooldown ring.")]
+        [Tooltip("Image with Fill Method = Radial 360. Filled 0→1 as cooldown expires.")]
         [SerializeField] private Image _pingCooldownRing;
 
         [Header("Gem Counter")]
-        [SerializeField] private Text _gemCounterText;
+        [SerializeField] private Text  _gemCounterText;
         [SerializeField] private CanvasGroup _gemCounterGroup;
-        private float _gemDisplayTimer;
-        private const float GemDisplayDuration = 3f;
 
-        [Header("Noise Maker Count")]
-        [SerializeField] private Text _noiseMakerText;
+        [Header("Noise Makers")]
+        [SerializeField] private Text  _noiseMakerText;
 
         [Header("Alert Meter")]
-        [Tooltip("Fill image for the alert meter (red bar).")]
-        [SerializeField] private Image _alertMeterFill;
+        [SerializeField] private Image       _alertMeterFill;
         [SerializeField] private CanvasGroup _alertMeterGroup;
 
         private void OnEnable()
         {
-            ScoreManager.OnScoreChanged += HandleScoreChanged;
+            // Subscribe to ScoreManager UnityEvents
+            if (ScoreManager.Instance != null)
+            {
+                ScoreManager.Instance.OnGemCountChanged.AddListener(UpdateGemCount);
+            }
         }
 
         private void OnDisable()
         {
-            ScoreManager.OnScoreChanged -= HandleScoreChanged;
+            // Unsubscribe from ScoreManager UnityEvents
+            if (ScoreManager.Instance != null)
+            {
+                ScoreManager.Instance.OnGemCountChanged.RemoveListener(UpdateGemCount);
+            }
         }
 
         private void Update()
         {
-            UpdatePingCooldown();
-            UpdateNoiseMakerCount();
-            UpdateGemFade();
+            if (_playerController == null) return;
+
+            // Poll frame-dependent data (cooldown changes every frame)
+            if (_pingCooldownRing != null)
+                _pingCooldownRing.fillAmount = _playerController.PingCooldownNormalized;
+
+            // Noise maker count
+            if (_noiseMakerText != null)
+                _noiseMakerText.text = $"x{_playerController.NoiseMakerCount}";
         }
 
-        private void UpdatePingCooldown()
+        /// <summary>Called by ScoreManager.OnGemCountChanged UnityEvent.</summary>
+        private void UpdateGemCount(int count)
         {
-            if (_pingCooldownRing == null || _playerController == null) return;
-
-            // Fill amount: 1 when ready, 0 when on cooldown
-            _pingCooldownRing.fillAmount = 1f - _playerController.PingCooldownNormalized;
-
-            // Change color when ready
-            _pingCooldownRing.color = _playerController.CanPing
-                ? new Color(0f, 0.9f, 1f, 0.8f)   // Cyan when ready
-                : new Color(0.3f, 0.3f, 0.3f, 0.4f); // Dim grey when on cooldown
-        }
-
-        private void UpdateNoiseMakerCount()
-        {
-            if (_noiseMakerText == null || _playerController == null) return;
-            _noiseMakerText.text = $"×{_playerController.NoiseMakerCount}";
-        }
-
-        private void HandleScoreChanged(ScoreData data)
-        {
-            // Update gem counter
             if (_gemCounterText != null)
-            {
-                _gemCounterText.text = $"{data.GemsCollected} / {data.TotalGems}";
-                _gemDisplayTimer = GemDisplayDuration;
-            }
+                _gemCounterText.text = $"Gems: {count}";
+
+            if (_gemCounterGroup != null)
+                _gemCounterGroup.alpha = count > 0 ? 1f : 0.4f;
         }
 
-        private void UpdateGemFade()
+        /// <summary>Public method for manual updates if needed.</summary>
+        public void SetGemCount(int count)
         {
-            if (_gemCounterGroup == null) return;
-
-            _gemDisplayTimer -= Time.deltaTime;
-            float targetAlpha = _gemDisplayTimer > 0 ? 1f : 0f;
-            _gemCounterGroup.alpha = Mathf.MoveTowards(_gemCounterGroup.alpha, targetAlpha, Time.deltaTime * 2f);
+            UpdateGemCount(count);
         }
 
-        /// <summary>
-        /// Call this from the guard alert system to update the alert meter.
-        /// Value from 0 (safe) to 1 (danger).
-        /// </summary>
-        public void SetAlertLevel(float level)
+        /// <summary>0–1. Drives the alert meter fill (fed by GuardStateMachine in future milestones).</summary>
+        public void SetAlertLevel(float normalized)
         {
             if (_alertMeterFill != null)
-                _alertMeterFill.fillAmount = level;
+                _alertMeterFill.fillAmount = Mathf.Clamp01(normalized);
 
             if (_alertMeterGroup != null)
-            {
-                float targetAlpha = level > 0.01f ? 1f : 0f;
-                _alertMeterGroup.alpha = Mathf.MoveTowards(_alertMeterGroup.alpha, targetAlpha, Time.deltaTime * 3f);
-            }
+                _alertMeterGroup.alpha = normalized > 0.01f ? 1f : 0f;
         }
     }
 }

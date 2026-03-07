@@ -1,16 +1,20 @@
 using UnityEngine;
 using UnityEngine.AI;
+using System.Collections.Generic;
 
 namespace EchoThief.AI
 {
     /// <summary>
     /// Handles waypoint-based patrol behavior for guards.
-    /// Guards walk between waypoints, pausing briefly at each one to "look around."
+    /// Guards walk between waypoints, pausing briefly at each one.
+    /// 
+    /// Phase 2 addition: If _waypoints is not assigned in the Inspector, the component
+    /// will attempt to auto-find GameObjects named "Waypoint_A", "Waypoint_B", etc.
     /// </summary>
     public class GuardPatrol : MonoBehaviour
     {
         [Header("Waypoints")]
-        [Tooltip("Assign patrol waypoints in the Inspector. The guard walks between them in order.")]
+        [Tooltip("Assign patrol waypoints in the Inspector. If left empty, auto-searches scene for Waypoint_A/B/C/...")]
         [SerializeField] private Transform[] _waypoints;
 
         [Header("Patrol Behavior")]
@@ -20,10 +24,58 @@ namespace EchoThief.AI
         [Tooltip("If true, guard ping-pongs (A→B→C→B→A). If false, loops (A→B→C→A).")]
         [SerializeField] private bool _pingPong = false;
 
-        private int _currentWaypointIndex = 0;
+        private int   _currentWaypointIndex = 0;
         private float _waitTimer;
-        private bool _isWaiting;
-        private int _direction = 1; // 1 = forward, -1 = reverse (for ping-pong)
+        private bool  _isWaiting;
+        private int   _direction = 1; // 1 = forward, -1 = reverse (ping-pong)
+
+        private void Awake()
+        {
+            // Auto-find waypoints when not assigned in Inspector
+            if (_waypoints == null || _waypoints.Length == 0)
+            {
+                AutoFindWaypoints();
+            }
+        }
+
+        /// <summary>
+        /// Searches the scene for sequentially named waypoint objects (Waypoint_A, Waypoint_B, …).
+        /// Falls back to any GameObject tagged "Waypoint".
+        /// </summary>
+        private void AutoFindWaypoints()
+        {
+            var found = new List<Transform>();
+
+            // Try lettered naming convention: Waypoint_A through Waypoint_Z
+            for (char c = 'A'; c <= 'Z'; c++)
+            {
+                GameObject go = GameObject.Find($"Waypoint_{c}");
+                if (go != null)
+                    found.Add(go.transform);
+            }
+
+            // Also try numbered convention: Waypoint_0 through Waypoint_19
+            if (found.Count == 0)
+            {
+                for (int i = 0; i < 20; i++)
+                {
+                    GameObject go = GameObject.Find($"Waypoint_{i}");
+                    if (go != null)
+                        found.Add(go.transform);
+                }
+            }
+
+            if (found.Count > 0)
+            {
+                _waypoints = found.ToArray();
+                Debug.Log($"[GuardPatrol] Auto-found {_waypoints.Length} waypoints for {gameObject.name}.");
+            }
+            else
+            {
+                Debug.LogWarning($"[GuardPatrol] No waypoints found for {gameObject.name}. " +
+                                 "Guard will stand still. Assign waypoints in the Inspector or name them Waypoint_A, Waypoint_B, etc.");
+            }
+        }
 
         /// <summary>
         /// Called every frame by GuardStateMachine while in Patrol state.
@@ -66,6 +118,7 @@ namespace EchoThief.AI
         public void SetDestination(NavMeshAgent agent)
         {
             if (_waypoints == null || _waypoints.Length == 0) return;
+            if (_waypoints[_currentWaypointIndex] == null) return;
 
             agent.SetDestination(_waypoints[_currentWaypointIndex].position);
         }
@@ -88,7 +141,7 @@ namespace EchoThief.AI
         }
 
         /// <summary>
-        /// Draw waypoint path in the editor for easy visualization.
+        /// Draw waypoint path gizmos in the editor.
         /// </summary>
         private void OnDrawGizmosSelected()
         {
@@ -108,7 +161,6 @@ namespace EchoThief.AI
             {
                 Gizmos.DrawSphere(_waypoints[_waypoints.Length - 1].position, 0.3f);
 
-                // Draw closing line for loop mode
                 if (!_pingPong && _waypoints[0] != null)
                 {
                     Gizmos.color = Color.cyan;

@@ -1,152 +1,145 @@
 using UnityEngine;
-using System;
-using EchoThief.Environment;
+using UnityEngine.Events;
 
 namespace EchoThief.Core
 {
     /// <summary>
-    /// Tracks score components during a level and computes the final score.
+    /// Tracks scoring components per level. Singleton.
+    /// Fires UnityEvents when counts change for UI updates.
     /// 
-    /// Formula:
-    ///   FinalScore = ArtifactsStolen * 1000
-    ///              + GemsCollected * 100
-    ///              - PingsUsed * 10
-    ///              + TimeBonus (if under par)
-    ///              + GhostBonus (if 0 pings)
+    /// Phase 2: Auto-starts the level timer on Start() so the HUD initialises
+    /// correctly even when GameManager doesn't explicitly call StartLevel().
     /// </summary>
     public class ScoreManager : MonoBehaviour
     {
         public static ScoreManager Instance { get; private set; }
 
-        /// <summary>Fired when the score changes so UI can update.</summary>
-        public static event Action<ScoreData> OnScoreChanged;
+        [Header("Score Values")]
+        [SerializeField] private int   _artifactPoints     = 1000;
+        [SerializeField] private int   _gemPoints          = 100;
+        [SerializeField] private int   _pingPenalty        = 10;
+        [SerializeField] private int   _ghostBonus         = 500;
+        [SerializeField] private int   _timeBonusPerSecond = 5;
+        [SerializeField] private float _parTime            = 120f;
 
-        [Header("Scoring Config")]
-        [SerializeField] private int _artifactPoints = 1000;
-        [SerializeField] private int _gemPoints = 100;
-        [SerializeField] private int _pingPenalty = 10;
-        [SerializeField] private int _ghostBonus = 500;
-        [SerializeField] private int _timeBonusPerSecond = 5;
-        [SerializeField] private float _parTime = 120f; // seconds
+        [Header("Events (UnityEvents for UI)")]
+        public UnityEvent<int> OnGemCountChanged      = new UnityEvent<int>();
+        public UnityEvent<int> OnPingCountChanged     = new UnityEvent<int>();
+        public UnityEvent<int> OnArtifactCountChanged = new UnityEvent<int>();
+        public UnityEvent<int> OnScoreChanged         = new UnityEvent<int>();
 
-        private int _artifactsStolen;
-        private int _gemsCollected;
-        private int _totalGems;
-        private int _pingsUsed;
-        private float _levelStartTime;
+        private int   _score;
+        private int   _pingCount;
+        private int   _gemsCollected;
+        private int   _artifactsCollected;
+        private float _levelTime;
+        private bool  _isRunning;
 
-        public int GemsCollected => _gemsCollected;
-        public int TotalGems => _totalGems;
-        public int PingsUsed => _pingsUsed;
+        public int   Score             => _score;
+        public int   PingCount         => _pingCount;
+        public int   GemCount          => _gemsCollected;
+        public int   ArtifactCount     => _artifactsCollected;
+        public float LevelTime         => _levelTime;
 
         private void Awake()
         {
-            if (Instance != null && Instance != this)
-            {
-                Destroy(gameObject);
-                return;
-            }
+            if (Instance != null && Instance != this) { Destroy(this); return; }
             Instance = this;
         }
 
         private void Start()
         {
-            // Auto-initialize level tracking based on scene objects
-            // This fixes the bug where total gems started at 0
-            var collectibles = FindObjectsOfType<Collectible>();
-            int totalGemCount = 0;
-            foreach (var c in collectibles)
+            // Auto-start so the HUD and timer work even in standalone test scenes
+            // that don't go through GameManager.LoadLevel().
+            // GameManager.SetState(Playing) should call StartLevel() explicitly in
+            // production; calling it here is safe because StartLevel() is idempotent.
+            if (!_isRunning)
             {
-                if (c.Type == CollectibleType.Gem)
-                {
-                    totalGemCount++;
-                }
+                StartLevel();
             }
-
-            InitLevel(totalGemCount, _parTime);
         }
 
-        /// <summary>
-        /// Call at level start to reset tracking.
-        /// </summary>
-        public void InitLevel(int totalGems, float parTime)
+        private void Update()
         {
-            _artifactsStolen = 0;
-            _gemsCollected = 0;
-            _totalGems = totalGems;
-            _pingsUsed = 0;
-            _parTime = parTime;
-            _levelStartTime = Time.time;
-
-            NotifyChange();
+            if (_isRunning) _levelTime += Time.deltaTime;
         }
 
-        public void AddArtifact()
+        /// <summary>Reset all counters and begin the level timer.</summary>
+        public void StartLevel()
         {
-            _artifactsStolen++;
-            NotifyChange();
+            _score              = 0;
+            _pingCount          = 0;
+            _gemsCollected      = 0;
+            _artifactsCollected = 0;
+            _levelTime          = 0f;
+            _isRunning          = true;
+
+            // Fire initial events so UI starts at correct "zero" state
+            OnScoreChanged?.Invoke(_score);
+            OnPingCountChanged?.Invoke(_pingCount);
+            OnGemCountChanged?.Invoke(_gemsCollected);
+            OnArtifactCountChanged?.Invoke(_artifactsCollected);
+        }
+
+        public void StopLevel() => _isRunning = false;
+
+        /// <summary>Called by PlayerController each time the player pings.</summary>
+        public void AddPing()
+        {
+            _pingCount++;
+            _score -= _pingPenalty;
+            OnPingCountChanged?.Invoke(_pingCount);
+            OnScoreChanged?.Invoke(_score);
+            Debug.Log($"[Score] Ping #{_pingCount}. Score: {_score} (-{_pingPenalty})");
         }
 
         public void AddGem()
         {
             _gemsCollected++;
-            NotifyChange();
+            _score += _gemPoints;
+            OnGemCountChanged?.Invoke(_gemsCollected);
+            OnScoreChanged?.Invoke(_score);
+            Debug.Log($"[Score] Gem collected #{_gemsCollected}. Score: {_score} (+{_gemPoints})");
         }
 
-        public void AddPing()
+        public void AddArtifact()
         {
-            _pingsUsed++;
-            NotifyChange();
+            _artifactsCollected++;
+            _score += _artifactPoints;
+            OnArtifactCountChanged?.Invoke(_artifactsCollected);
+            OnScoreChanged?.Invoke(_score);
+            Debug.Log($"[Score] Artifact collected #{_artifactsCollected}. Score: {_score} (+{_artifactPoints})");
         }
 
-        /// <summary>
-        /// Compute the final score for the level.
-        /// </summary>
         public int ComputeFinalScore()
         {
-            float elapsed = Time.time - _levelStartTime;
-            int score = _artifactsStolen * _artifactPoints
-                      + _gemsCollected * _gemPoints
-                      - _pingsUsed * _pingPenalty;
+            int final = _score;
 
-            // Time bonus
-            if (elapsed < _parTime)
-            {
-                int secondsUnder = Mathf.FloorToInt(_parTime - elapsed);
-                score += secondsUnder * _timeBonusPerSecond;
-            }
+            // Ghost bonus: never pinged
+            if (_pingCount == 0) final += _ghostBonus;
 
-            // Ghost bonus (no pings at all)
-            if (_pingsUsed == 0)
-            {
-                score += _ghostBonus;
-            }
+            // Time bonus for finishing under par time
+            float timeDelta = _parTime - _levelTime;
+            if (timeDelta > 0) final += Mathf.FloorToInt(timeDelta * _timeBonusPerSecond);
 
-            return Mathf.Max(0, score);
+            int finalScore = Mathf.Max(0, final);
+            OnScoreChanged?.Invoke(finalScore);
+            return finalScore;
         }
 
-        private void NotifyChange()
+        public void ResetLevel()
         {
-            OnScoreChanged?.Invoke(new ScoreData
-            {
-                ArtifactsStolen = _artifactsStolen,
-                GemsCollected = _gemsCollected,
-                TotalGems = _totalGems,
-                PingsUsed = _pingsUsed,
-                ElapsedTime = Time.time - _levelStartTime
-            });
-        }
-    }
+            _score              = 0;
+            _pingCount          = 0;
+            _gemsCollected      = 0;
+            _artifactsCollected = 0;
+            _levelTime          = 0f;
+            _isRunning          = false;
 
-    /// <summary>
-    /// Snapshot of current score state, passed to UI via events.
-    /// </summary>
-    public struct ScoreData
-    {
-        public int ArtifactsStolen;
-        public int GemsCollected;
-        public int TotalGems;
-        public int PingsUsed;
-        public float ElapsedTime;
+            OnScoreChanged?.Invoke(0);
+            OnPingCountChanged?.Invoke(0);
+            OnGemCountChanged?.Invoke(0);
+            OnArtifactCountChanged?.Invoke(0);
+        }
     }
 }

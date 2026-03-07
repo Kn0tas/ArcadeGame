@@ -1,115 +1,132 @@
 using UnityEngine;
 using EchoThief.Core;
+using EchoThief.Player;
 
 namespace EchoThief.Environment
 {
     /// <summary>
-    /// Types of collectible items.
-    /// </summary>
-    public enum CollectibleType
-    {
-        Gem,
-        Artifact,
-        KeyCard,
-        NoiseMaker,
-        SoftShoes,
-        EchoBomb
-    }
-
-    /// <summary>
-    /// Collectible item component. When the player enters the trigger collider,
-    /// the item is collected and the appropriate game event fires.
+    /// Collectible items: gems, artifacts, noise makers.
+    /// Phase 2: Gems emit proximity glow pulses when player is nearby.
     /// </summary>
     [RequireComponent(typeof(Collider))]
     public class Collectible : MonoBehaviour
     {
-        [Header("Collectible Settings")]
+        public enum CollectibleType { Gem, Artifact, NoiseMaker }
+
+        [Header("Type")]
         [SerializeField] private CollectibleType _type = CollectibleType.Gem;
 
-        [Tooltip("Small sonar glow when the player is near (free hint).")]
+        [Header("Proximity Glow (Gems only)")]
         [SerializeField] private float _proximityGlowRadius = 2f;
-        [SerializeField] private Color _glowColor = new Color(1f, 1f, 0.5f, 1f); // Warm yellow
+        [SerializeField] private Color _glowColor = new Color(1f, 0.92f, 0.23f, 1f); // Yellow
+        [SerializeField] private float _glowInterval = 1.5f;
 
         [Header("Audio")]
         [SerializeField] private AudioClip _collectSound;
 
+        private Transform _playerTransform;
+        private float _glowTimer;
+
         public CollectibleType Type => _type;
 
-        private bool _collected;
-
-        private void OnTriggerEnter(Collider other)
+        private void Awake()
         {
-            if (_collected) return;
-
-            if (other.CompareTag("Player"))
+            // Ensure collider is trigger
+            Collider col = GetComponent<Collider>();
+            if (!col.isTrigger)
             {
-                Collect(other.gameObject);
+                Debug.LogWarning($"[Collectible] {gameObject.name} collider is not a trigger. Setting isTrigger = true.");
+                col.isTrigger = true;
+            }
+
+            // Cache player reference
+            GameObject player = GameObject.FindGameObjectWithTag("Player");
+            if (player != null)
+                _playerTransform = player.transform;
+        }
+
+        private void Update()
+        {
+            // Phase 2: Proximity glow for gems
+            if (_type == CollectibleType.Gem && _playerTransform != null)
+            {
+                EmitProximityGlow();
             }
         }
 
-        private void Collect(GameObject player)
+        /// <summary>
+        /// Phase 2 Addition: Emit yellow sonar pulses when player is nearby.
+        /// Helps player discover gems without spamming pings.
+        /// </summary>
+        private void EmitProximityGlow()
         {
-            _collected = true;
-            Debug.Log($"[Collectible] Player collected: {_type}");
+            float dist = Vector3.Distance(transform.position, _playerTransform.position);
 
-            // Tiny sonar glow on pickup
-            NoiseEventBus.EmitNoise(new NoiseEvent(
-                origin: transform.position,
-                loudness: 0.01f, // Nearly silent — guards shouldn't hear this
-                sonarRadius: _proximityGlowRadius,
-                sonarColor: _glowColor,
-                source: gameObject
-            ));
+            if (dist < _proximityGlowRadius)
+            {
+                _glowTimer -= Time.deltaTime;
+                if (_glowTimer <= 0f)
+                {
+                    NoiseEventBus.EmitNoise(new NoiseEvent(
+                        origin: transform.position,
+                        loudness: 0.1f,  // Very quiet — shouldn't alert guards
+                        sonarRadius: 3f,
+                        sonarColor: _glowColor,
+                        source: gameObject
+                    ));
+                    _glowTimer = _glowInterval;
+                }
+            }
+            else
+            {
+                _glowTimer = 0f;  // Reset when player leaves proximity
+            }
+        }
 
-            // Notify game systems based on type
+        private void OnTriggerEnter(Collider other)
+        {
+            if (!other.CompareTag("Player")) return;
+
+            // Process collection based on type
             switch (_type)
             {
                 case CollectibleType.Gem:
-                    ScoreManager.Instance?.AddGem();
+                    if (ScoreManager.Instance != null)
+                        ScoreManager.Instance.AddGem();
                     break;
 
                 case CollectibleType.Artifact:
-                    ScoreManager.Instance?.AddArtifact();
+                    if (ScoreManager.Instance != null)
+                        ScoreManager.Instance.AddArtifact();
                     break;
 
                 case CollectibleType.NoiseMaker:
-                    var playerController = player.GetComponent<EchoThief.Player.PlayerController>();
-                    if (playerController != null)
-                    {
-                        playerController.AddNoiseMaker(1);
-                    }
-                    break;
-
-                case CollectibleType.KeyCard:
-                    // TODO: Add to player's key inventory
-                    break;
-
-                case CollectibleType.SoftShoes:
-                    // TODO: Apply temporary silent-running buff
-                    break;
-
-                case CollectibleType.EchoBomb:
-                    // TODO: Add to player's special inventory
+                    PlayerController player = other.GetComponent<PlayerController>();
+                    if (player != null)
+                        player.AddNoiseMaker(1);
                     break;
             }
 
-            // Play collect sound
+            // Play collection sound
             if (_collectSound != null)
             {
                 AudioSource.PlayClipAtPoint(_collectSound, transform.position);
             }
 
-            // Destroy the collectible
+            // Destroy collectible
             Destroy(gameObject);
         }
 
-        /// <summary>
-        /// Draw the proximity glow radius in the editor.
-        /// </summary>
+#if UNITY_EDITOR
         private void OnDrawGizmosSelected()
         {
-            Gizmos.color = _glowColor;
-            Gizmos.DrawWireSphere(transform.position, _proximityGlowRadius);
+            // Draw proximity glow radius (for gems)
+            if (_type == CollectibleType.Gem)
+            {
+                Gizmos.color = new Color(_glowColor.r, _glowColor.g, _glowColor.b, 0.3f);
+                Gizmos.DrawWireSphere(transform.position, _proximityGlowRadius);
+            }
         }
+#endif
     }
 }
