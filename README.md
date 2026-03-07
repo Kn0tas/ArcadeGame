@@ -613,14 +613,14 @@ The HUD should be nearly invisible. Information is communicated through the game
 
 **Goal:** Add guards and the core stealth loop.
 
-- [ ] Implement the `NoiseEventBus` (decoupled event system)
-- [ ] Create guard AI with basic state machine (Patrol → Suspicious → Alerted)
-- [ ] Implement guard hearing system (react to noise events)
-- [ ] Add guard patrol waypoint system
-- [ ] Make guards produce their own sonar pings (red) when walking
-- [ ] Add collectible gems
+- [x] Implement the `NoiseEventBus` (decoupled event system)
+- [x] Create guard AI with basic state machine (Patrol → Suspicious → Alerted)
+- [x] Implement guard hearing system (react to noise events)
+- [x] Add guard patrol waypoint system
+- [x] Make guards produce their own sonar pings (red) when walking
+- [x] Add collectible gems
 - [x] Add noise-maker throwables
-- [ ] **Playtest milestone:** Sneak past one guard, steal a gem, reach the exit
+- [x] **Playtest milestone:** Sneak past one guard, steal a gem, reach the exit
 
 ### Phase 3 — Polish & Juice (Week 5–6) 🟠
 
