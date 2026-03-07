@@ -1089,7 +1089,7 @@ MonoBehaviour:
   m_DefaultArea: 0
   m_GenerateLinks: 0
   m_IgnoreNavMeshAgent: 1
-  m_IgnoreNavMeshObstacle: 1
+  m_IgnoreNavMeshObstacle: 0
   m_OverrideTileSize: 0
   m_TileSize: 256
   m_OverrideVoxelSize: 0
@@ -1623,7 +1623,7 @@ GameObject:
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
-  m_StaticEditorFlags: 0
+  m_StaticEditorFlags: 95
   m_IsActive: 1
 --- !u!65 &2200000002
 BoxCollider:
@@ -1731,7 +1731,7 @@ GameObject:
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
-  m_StaticEditorFlags: 0
+  m_StaticEditorFlags: 95
   m_IsActive: 1
 --- !u!65 &2200000012
 BoxCollider:
@@ -1839,7 +1839,7 @@ GameObject:
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
-  m_StaticEditorFlags: 0
+  m_StaticEditorFlags: 95
   m_IsActive: 1
 --- !u!65 &2200000022
 BoxCollider:
@@ -1947,7 +1947,7 @@ GameObject:
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
-  m_StaticEditorFlags: 0
+  m_StaticEditorFlags: 95
   m_IsActive: 1
 --- !u!65 &2200000032
 BoxCollider:
@@ -2055,7 +2055,7 @@ GameObject:
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
-  m_StaticEditorFlags: 0
+  m_StaticEditorFlags: 95
   m_IsActive: 1
 --- !u!65 &2200000042
 BoxCollider:
@@ -2163,7 +2163,7 @@ GameObject:
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
-  m_StaticEditorFlags: 0
+  m_StaticEditorFlags: 95
   m_IsActive: 1
 --- !u!65 &2200000052
 BoxCollider:
@@ -2271,7 +2271,7 @@ GameObject:
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
-  m_StaticEditorFlags: 0
+  m_StaticEditorFlags: 95
   m_IsActive: 1
 --- !u!65 &2200000062
 BoxCollider:
