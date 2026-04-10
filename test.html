@@ -53,6 +53,7 @@
     <button id="pulse">Pulse (Space)</button>
     <button id="toggleVisibility">Show Visibility</button>
     <button id="toggleVisGraph">Show Vis Graph</button>
+    <button id="resetSources">Reset Sources</button>
     <label>Radius: <input type="range" id="radiusSlider" min="10" max="3000" value="100"></label>
     <label>Reflections: <input type="range" id="reflectionsSlider" min="1" max="5" value="2"></label>
   </div>
@@ -472,6 +473,8 @@
       const I = rayCircleIntersection(C, sub(A, C), C, maxRadius);
       const J = rayCircleIntersection(C, sub(B, C), C, maxRadius);
 
+      let isAlive = false;
+
       if (maxRadius > distCpToLine) {
         let G, H;
         const intersectionsD = lineCircleIntersection(A, B, Cp, maxRadius);
@@ -498,23 +501,24 @@
           });
         }
 
-        const startPointGI = G || I;
-        if (startPointGI && I) {
+        if (G && I) {
           arcs.push({
             center: C, radius: maxRadius,
-            startAngle: Math.atan2(startPointGI.y - C.y, startPointGI.x - C.x),
+            startAngle: Math.atan2(G.y - C.y, G.x - C.x),
             endAngle:   Math.atan2(I.y - C.y, I.x - C.x),
             reflectionLevel, color: 'rgba(255, 150, 100, 0.8)'
           });
+          isAlive = true;
         }
-        const endPointHJ = H || J;
-        if (J && endPointHJ) {
+
+        if (J && H) {
           arcs.push({
             center: C, radius: maxRadius,
             startAngle: Math.atan2(J.y - C.y, J.x - C.x),
-            endAngle:   Math.atan2(endPointHJ.y - C.y, endPointHJ.x - C.x),
+            endAngle:   Math.atan2(H.y - C.y, H.x - C.x),
             reflectionLevel, color: 'rgba(255, 150, 100, 0.8)'
           });
+          isAlive = true;
         }
       } else {
         if (I && J) {
@@ -524,10 +528,11 @@
             endAngle:   Math.atan2(I.y - C.y, I.x - C.x),
             reflectionLevel, color: 'rgba(255, 255, 100, 0.8)'
           });
+          isAlive = true;
         }
       }
 
-      return { arcs, sources };
+      return { arcs, sources, isAlive };
     }
 
     // === RENDERING ===
@@ -684,35 +689,53 @@
       state.maxReflections = parseInt(e.target.value);
     });
 
+    document.getElementById('resetSources').addEventListener('click', () => {
+      state.sources = soundSourceAsSource(state.soundSource);
+      render();
+    });
+
     document.addEventListener('keydown', (e) => {
       if (e.code === 'Space') { e.preventDefault(); document.getElementById('pulse').click(); }
     });
 
-    function animate() {
-      if (state.baking) return;
-      state.pulseRadius = state.maxRadius;
-      state.arcs = [];
-      state.sources = [];
-      state.visibleSegments = [];
-
-      const queue = [];
-
+    function soundSourceAsSource(source) {
+      const sources = [];
       state.walls.forEach(wall => {
         const candidateWalls = wall.visibleWalls && wall.visibleWalls.length > 0
           ? wall.visibleWalls : state.walls;
         const subSegs = getVisibleSubSegments(state.soundSource, wall, candidateWalls);
         subSegs.forEach(seg => {
           state.visibleSegments.push(seg);
-          queue.push({ source: state.soundSource, wall: seg, originalWall: wall, reflectionLevel: 0, virtualSource: null });
+          sources.push({ source: state.soundSource, wall: seg, originalWall: wall, reflectionLevel: 0, virtualSource: null });
         });
       });
+      return sources;
+    }
+
+    function animate() {
+      if (state.baking) return;
+      state.pulseRadius = state.maxRadius;
+      state.arcs = [];
+      state.visibleSegments = [];
+
+      const queue = [];
+
+      if (state.sources.length === 0) {
+        state.sources = soundSourceAsSource(state.soundSource);
+      }
+
+      queue.push(...state.sources);     
 
       while (queue.length > 0) {
-        const { source, wall, originalWall, reflectionLevel, virtualSource } = queue.shift();
+        const item = queue.shift();
+        const { source, wall, originalWall, reflectionLevel, virtualSource } = item;
         const result = computeReflections(source, state.pulseRadius, wall, reflectionLevel, virtualSource, originalWall);
 
         if (reflectionLevel < state.maxReflections) state.arcs.push(...result.arcs);
-        state.sources.push(...result.sources);
+
+        if (result.isAlive === false) {
+          state.sources.splice(state.sources.indexOf(item), 1);
+        }
 
         result.sources.forEach(newSource => {
           const reflectorWall = newSource.originalWall;
@@ -721,13 +744,17 @@
           candidates.forEach(nextWall => {
             const subSegs = getVisibleSubSegments(newSource.center, nextWall, candidates, newSource);
             subSegs.forEach(seg => {
-              queue.push({
+              const source = {
                 source: newSource.center,
                 wall: seg,
                 originalWall: nextWall,
                 reflectionLevel: reflectionLevel + 1,
                 virtualSource: { originalWall: newSource.originalWall, cone: newSource.cone }
-              });
+              }
+              if (!result.isAlive) {
+                state.sources.push(source);
+              }
+              queue.push(source);
             });
           });
         });
@@ -756,19 +783,27 @@
     }
 
     function drawVirtualSource(source) {
-      ctx.strokeStyle = 'rgba(255, 100, 255, 0.8)';
+      if (source.virtualSource) {
+        ctx.fillStyle = 'rgba(255, 100, 255, 0.8)';
+      } else {
+        ctx.fillStyle = 'rgba(255, 100, 100, 0.8)';
+      }
+
       ctx.lineWidth = 2;
+      ctx.strokeStyle = 'rgba(255, 100, 255, 0.8)';
       ctx.beginPath();
-      ctx.arc(source.center.x, source.center.y, 6, 0, Math.PI * 2);
+      ctx.arc(source.source.x, source.source.y, 6, 0, Math.PI * 2);
       ctx.stroke();
-      ctx.beginPath();
-      const length = 12;
-      ctx.moveTo(source.center.x, source.center.y);
-      ctx.lineTo(source.center.x + source.cone.startDir.x * length, source.center.y + source.cone.startDir.y * length);
-      ctx.moveTo(source.center.x, source.center.y);
-      ctx.lineTo(source.center.x + source.cone.endDir.x * length, source.center.y + source.cone.endDir.y * length);
-      ctx.closePath();
-      ctx.stroke();
+
+      if (source.virtualSource) {
+        const length = 12;
+        ctx.beginPath();
+        ctx.moveTo(source.source.x, source.source.y);
+        ctx.lineTo(source.source.x + source.virtualSource.cone.startDir.x * length, source.source.y + source.virtualSource.cone.startDir.y * length);
+        ctx.moveTo(source.source.x, source.source.y);
+        ctx.lineTo(source.source.x + source.virtualSource.cone.endDir.x * length, source.source.y + source.virtualSource.cone.endDir.y * length);
+        ctx.stroke();
+      }
     }
 
     function render() {
