@@ -223,8 +223,8 @@
 
       // Blocker endpoint must be in front of the wall (u > 1 means wall line is farther than endpoint)
       // If u is between 0..1 the wall is CLOSER than the blocker → blocker is behind the wall → skip
-      const validA = uA > 1;
-      const validB = uB > 1;
+      const validA = uA >= 1;
+      const validB = uB >= 1;
       if (!validA && !validB) return null;
 
       let t0, t1;
@@ -848,10 +848,10 @@
     function w(x, z) { return vec2(roomCx + x * roomScale, roomCy - z * roomScale); }
 
     const testRoomWalls = [
-      { a: w(-21, 20),  b: w( 21, 20)  },
+      { a: w(-21, 20),  b: w( 21, 20), label: 'TOP'  },
       { a: w( 21,-20),  b: w(-21,-20)  },
       { a: w( 20, 20),  b: w( 20,-20)  },
-      { a: w(-20,-20),  b: w(-20, 20)  },
+      { a: w(-20,-20),  b: w(-20, 20), label: 'LEFT'  },
       { a: w(  8, 12),  b: w(  8,  4)  },
       { a: w(  9, 12),  b: w(  8, 12)  },
       { a: w(  9,  4),  b: w(  9, 12)  },
