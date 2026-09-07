@@ -153,7 +153,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: ee935d67bd6138c4b936f2c456c73e9b, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::EchoThief.Player.NoiseMaker
-  _impactLoudness: 0.8
+  _impactLoudness: 1.0
   _impactRadius: 15
   _impactColor: {r: 1, g: 0, b: 1, a: 1}
   _destroyDelay: 0.1

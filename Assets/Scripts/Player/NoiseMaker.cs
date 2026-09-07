@@ -13,7 +13,7 @@ namespace EchoThief.Player
     {
         [Header("Noise Settings")]
         [Tooltip("Loudness of the impact (0-1).")]
-        [SerializeField] private float _impactLoudness = 0.8f;
+        [SerializeField] private float _impactLoudness = 1.0f;
 
         [Tooltip("Radius of the sonar pulse created on impact.")]
         [SerializeField] private float _impactRadius = 15f;

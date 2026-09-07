@@ -6,6 +6,7 @@ Shader "EchoThief/SonarPostProcess"
         _EdgeDetectionThreshold ("Edge Detection Threshold", Range(0.001, 0.1)) = 0.01
         _GlowIntensity ("Glow Intensity", Range(0.5, 5.0)) = 2.0
         _BackgroundColor ("Background Color", Color) = (0, 0, 0, 1)
+        _SonarArcThickness ("Arc Thickness", Range(0.1, 4.0)) = 1.5
     }
 
     SubShader
@@ -28,29 +29,20 @@ Shader "EchoThief/SonarPostProcess"
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/DeclareDepthTexture.hlsl"
             #include "Packages/com.unity.render-pipelines.core/Runtime/Utilities/Blit.hlsl"
 
-            // -- Textures --
-            // _BlitTexture is declared in Blit.hlsl
-
-            // -- Properties --
             float _EdgeDetectionThreshold;
             float _GlowIntensity;
             float4 _BackgroundColor;
+            float _SonarArcThickness;
 
-            // -- Sonar Pulse Data (set globally by SonarManager.cs) --
-            // Max 20 pulses to match SonarManager._maxPulses
-            #define MAX_PULSES 20
+            #define MAX_ARCS 64
 
-            int _SonarPulseCount;
-            float4 _SonarPulseOrigins[MAX_PULSES];  // xyz = world position
-            float _SonarPulseRadii[MAX_PULSES];      // current expanding radius
-            float _SonarPulseThickness[MAX_PULSES];  // ring band width
-            float _SonarPulseFades[MAX_PULSES];      // 1 = full, 0 = gone
-            float4 _SonarPulseColors[MAX_PULSES];    // rgba neon color
+            int _SonarArcCount;
+            float4 _SonarArcOrigins[MAX_ARCS]; // xz = center
+            float _SonarArcRadii[MAX_ARCS];
+            float4 _SonarArcAngles[MAX_ARCS]; // x = start, y = end
+            float _SonarArcFades[MAX_ARCS];
+            float4 _SonarArcColors[MAX_ARCS];
 
-            // Vert is provided by Blit.hlsl
-            // It outputs Varyings with positionCS and texcoord
-
-            // Reconstruct world position from depth buffer
             float3 ReconstructWorldPos(float2 uv)
             {
                 float depth = SampleSceneDepth(uv);
@@ -58,22 +50,42 @@ Shader "EchoThief/SonarPostProcess"
                 return worldPos;
             }
 
-            // Simple depth-based edge detection (Sobel-like)
             float EdgeDetection(float2 uv)
             {
                 float2 texelSize = _BlitTexture_TexelSize.xy;
 
                 float depthCenter = SampleSceneDepth(uv);
-                float depthLeft   = SampleSceneDepth(uv + float2(-texelSize.x, 0));
-                float depthRight  = SampleSceneDepth(uv + float2( texelSize.x, 0));
-                float depthUp     = SampleSceneDepth(uv + float2(0,  texelSize.y));
-                float depthDown   = SampleSceneDepth(uv + float2(0, -texelSize.y));
+                float depthLeft = SampleSceneDepth(uv + float2(-texelSize.x, 0));
+                float depthRight = SampleSceneDepth(uv + float2(texelSize.x, 0));
+                float depthUp = SampleSceneDepth(uv + float2(0, texelSize.y));
+                float depthDown = SampleSceneDepth(uv + float2(0, -texelSize.y));
 
                 float edgeH = abs(depthLeft - depthRight);
                 float edgeV = abs(depthUp - depthDown);
                 float edge = max(edgeH, edgeV);
 
                 return step(_EdgeDetectionThreshold, edge);
+            }
+
+            float NormalizeAngle(float angle)
+            {
+                float twoPi = 6.2831853;
+                float wrapped = fmod(angle, twoPi);
+                return wrapped < 0 ? wrapped + twoPi : wrapped;
+            }
+
+            float AngleMask(float angle, float startAngle, float endAngle)
+            {
+                float twoPi = 6.2831853;
+                float start = NormalizeAngle(startAngle);
+                float end = NormalizeAngle(endAngle);
+                float span = end - start;
+                if (span < 0) span += twoPi;
+                if (span < 0.001) return 1.0;
+
+                float local = angle - start;
+                if (local < 0) local += twoPi;
+                return local <= span ? 1.0 : 0.0;
             }
 
             float4 Frag(Varyings input) : SV_Target
@@ -85,44 +97,46 @@ Shader "EchoThief/SonarPostProcess"
                 float3 finalColor = _BackgroundColor.rgb;
                 float totalVisibility = 0;
 
-                // Accumulate visibility from all active sonar pulses
-                for (int i = 0; i < _SonarPulseCount; i++)
+                float2 worldXZ = float2(worldPos.x, worldPos.z);
+
+                for (int i = 0; i < _SonarArcCount; i++)
                 {
-                    float3 pulseOrigin = _SonarPulseOrigins[i].xyz;
-                    float radius = _SonarPulseRadii[i];
-                    float thickness = _SonarPulseThickness[i];
-                    float fade = _SonarPulseFades[i];
-                    float3 pulseColor = _SonarPulseColors[i].rgb;
+                    float2 centerXZ = float2(_SonarArcOrigins[i].x, _SonarArcOrigins[i].z);
+                    float radius = _SonarArcRadii[i];
+                    float startAngle = _SonarArcAngles[i].x;
+                    float endAngle = _SonarArcAngles[i].y;
+                    float fade = _SonarArcFades[i];
+                    float3 pulseColor = _SonarArcColors[i].rgb;
 
-                    float dist = distance(worldPos, pulseOrigin);
+                    float2 arcVector = worldXZ - centerXZ;
+                    float dist = length(arcVector);
+                    float angle = atan2(arcVector.y, arcVector.x);
 
-                    // Ring band: visible between (radius - thickness) and (radius + thickness)
-                    float ringInner = smoothstep(radius - thickness, radius - thickness * 0.5, dist);
-                    float ringOuter = 1.0 - smoothstep(radius + thickness * 0.5, radius + thickness, dist);
+                    float angleMask = AngleMask(angle, startAngle, endAngle);
+                    if (angleMask <= 0.0)
+                    {
+                        continue;
+                    }
+
+                    float ringInner = smoothstep(radius - _SonarArcThickness, radius - _SonarArcThickness * 0.5, dist);
+                    float ringOuter = 1.0 - smoothstep(radius + _SonarArcThickness * 0.5, radius + _SonarArcThickness, dist);
                     float ring = ringInner * ringOuter;
+                    float trail = 0.0;
 
-                    // Also show a fading "trail" inside the ring (already-scanned area)
-                    float trail = saturate(1.0 - (dist / (radius + 0.001))) * 0.15;
-
-                    float visibility = (ring + trail) * fade;
-                    totalVisibility += visibility;
-
-                    // Blend pulse color
-                    finalColor += pulseColor * visibility * _GlowIntensity;
+                    float visibility = (ring + trail) * fade * angleMask;
+                    if (visibility > totalVisibility)
+                    {
+                        totalVisibility = visibility;
+                        finalColor = pulseColor * visibility * _GlowIntensity;
+                    }
                 }
 
                 totalVisibility = saturate(totalVisibility);
-
-                // Multiply by edge detection to get that wireframe/outline look
-                // Mix between full fill (slight) and edge-only (strong)
                 float edgeMix = lerp(0.1, 1.0, edge);
                 finalColor *= edgeMix * totalVisibility;
 
-                // Add a subtle base scene color in sonar-lit areas (so geometry has some fill)
                 float3 sceneColor = SAMPLE_TEXTURE2D(_BlitTexture, sampler_LinearClamp, uv).rgb;
                 finalColor += sceneColor * totalVisibility * 0.05;
-
-                // Background where nothing is visible
                 finalColor = lerp(_BackgroundColor.rgb, finalColor, totalVisibility);
 
                 return float4(finalColor, 1.0);

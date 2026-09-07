@@ -1,49 +1,56 @@
-using UnityEngine;
 using System.Collections.Generic;
+using UnityEngine;
 using EchoThief.Core;
 
 namespace EchoThief.Sonar
 {
     /// <summary>
-    /// Manages all active sonar pulses. Listens to NoiseEventBus, spawns pulses,
-    /// updates them each frame, and pushes data to the GPU via global shader properties.
-    /// 
-    /// Attach this to a single persistent GameObject in the scene.
+    /// Manages active sonar waves, resolves wall occlusion/reflection, and pushes arc data to the shader.
     /// </summary>
     public class SonarManager : MonoBehaviour
     {
         public static SonarManager Instance { get; private set; }
 
-        [Header("Pulse Defaults")]
-        [Tooltip("How fast the sonar ring expands (units/sec).")]
+        [Header("Wave Settings")]
+        [Tooltip("How fast the sonar wave expands (units/sec).")]
         [SerializeField] private float _defaultExpansionSpeed = 12f;
 
-        [Tooltip("Width of the visible ring band.")]
-        [SerializeField] private float _defaultRingThickness = 1.5f;
+        [Tooltip("Width of the visible sonar ring band.")]
+        [SerializeField] private float _defaultArcThickness = 1.5f;
 
-        [Tooltip("How long a pulse lives before fading out (seconds).")]
-        [SerializeField] private float _defaultMaxAge = 2.5f;
+        [Tooltip("Sound energy retention for reflections.")]
+        [SerializeField] [Range(0.1f, 1f)] private float _reflectionCoefficient = 0.65f;
+
+        [Tooltip("Minimum loudness at which sonar arcs remain visible.")]
+        [SerializeField] private float _loudnessThreshold = 0.02f;
+
+        [Tooltip("Maximum number of reflection bounces.")]
+        [SerializeField] private int _maxReflections = 1;
 
         [Header("Limits")]
-        [Tooltip("Maximum simultaneous pulses. Shader array size must match.")]
-        [SerializeField] private int _maxPulses = 20;
+        [Tooltip("Maximum simultaneous sonar waves kept in memory.")]
+        [SerializeField] private int _maxWaves = 32;
 
-        private readonly List<SonarPulse> _activePulses = new List<SonarPulse>();
+        [Tooltip("Maximum arcs that can be uploaded to the shader.")]
+        [SerializeField] private int _maxArcs = 64;
 
-        // Shader property IDs (cached for performance)
-        private static readonly int PulseCountId = Shader.PropertyToID("_SonarPulseCount");
-        private static readonly int PulseOriginsId = Shader.PropertyToID("_SonarPulseOrigins");
-        private static readonly int PulseRadiiId = Shader.PropertyToID("_SonarPulseRadii");
-        private static readonly int PulseThicknessId = Shader.PropertyToID("_SonarPulseThickness");
-        private static readonly int PulseFadesId = Shader.PropertyToID("_SonarPulseFades");
-        private static readonly int PulseColorsId = Shader.PropertyToID("_SonarPulseColors");
+        private readonly List<SoundWave> _activeWaves = new List<SoundWave>();
+        private readonly List<ReflectionSolver.SoundArc> _activeArcs = new List<ReflectionSolver.SoundArc>();
+        private readonly List<SoundWave> _newReflections = new List<SoundWave>();
 
-        // Reusable arrays to avoid GC allocation every frame
-        private Vector4[] _origins;
-        private float[] _radii;
-        private float[] _thickness;
-        private float[] _fades;
-        private Vector4[] _colors;
+        private static readonly int ArcCountId = Shader.PropertyToID("_SonarArcCount");
+        private static readonly int ArcOriginsId = Shader.PropertyToID("_SonarArcOrigins");
+        private static readonly int ArcRadiiId = Shader.PropertyToID("_SonarArcRadii");
+        private static readonly int ArcAnglesId = Shader.PropertyToID("_SonarArcAngles");
+        private static readonly int ArcFadesId = Shader.PropertyToID("_SonarArcFades");
+        private static readonly int ArcColorsId = Shader.PropertyToID("_SonarArcColors");
+        private static readonly int ArcThicknessId = Shader.PropertyToID("_SonarArcThickness");
+
+        private Vector4[] _arcOrigins;
+        private float[] _arcRadii;
+        private Vector4[] _arcAngles;
+        private float[] _arcFades;
+        private Vector4[] _arcColors;
 
         private void Awake()
         {
@@ -52,14 +59,16 @@ namespace EchoThief.Sonar
                 Destroy(gameObject);
                 return;
             }
-            Instance = this;
 
-            // Allocate arrays
-            _origins = new Vector4[_maxPulses];
-            _radii = new float[_maxPulses];
-            _thickness = new float[_maxPulses];
-            _fades = new float[_maxPulses];
-            _colors = new Vector4[_maxPulses];
+            Instance = this;
+            _maxArcs = Mathf.Max(1, _maxArcs);
+            _maxWaves = Mathf.Max(1, _maxWaves);
+
+            _arcOrigins = new Vector4[_maxArcs];
+            _arcRadii = new float[_maxArcs];
+            _arcAngles = new Vector4[_maxArcs];
+            _arcFades = new float[_maxArcs];
+            _arcColors = new Vector4[_maxArcs];
         }
 
         private void OnEnable()
@@ -74,86 +83,103 @@ namespace EchoThief.Sonar
 
         private void Update()
         {
-            // Update all pulses
-            for (int i = _activePulses.Count - 1; i >= 0; i--)
-            {
-                _activePulses[i].Update(Time.deltaTime);
+            _activeArcs.Clear();
+            _newReflections.Clear();
 
-                if (!_activePulses[i].IsAlive)
+            for (int i = _activeWaves.Count - 1; i >= 0; i--)
+            {
+                var wave = _activeWaves[i];
+                float previousRadius = wave.Radius;
+                wave.Advance(Time.deltaTime, _defaultExpansionSpeed);
+
+                if (!wave.IsAlive(_loudnessThreshold))
                 {
-                    _activePulses.RemoveAt(i);
+                    _activeWaves.RemoveAt(i);
+                    continue;
                 }
+
+                ReflectionSolver.SolveWave(
+                    wave,
+                    previousRadius,
+                    WallRegistry.WallFaces,
+                    _reflectionCoefficient,
+                    _loudnessThreshold,
+                    _maxReflections,
+                    _activeArcs,
+                    _newReflections);
+
+                _activeWaves[i] = wave;
             }
 
-            // Push data to the shader
+            foreach (var reflection in _newReflections)
+            {
+                if (_activeWaves.Count >= _maxWaves)
+                {
+                    _activeWaves.RemoveAt(0);
+                }
+
+                _activeWaves.Add(reflection);
+            }
+
             PushToShader();
         }
 
-        /// <summary>
-        /// Spawn a new sonar pulse from a noise event.
-        /// </summary>
         private void HandleNoiseEvent(NoiseEvent noise)
         {
-            SpawnPulse(noise.Origin, noise.SonarRadius, noise.SonarColor);
+            SpawnWave(noise.Origin, noise.SonarRadius, noise.SonarColor, noise.Loudness);
         }
 
-        /// <summary>
-        /// Manually spawn a pulse (e.g., from ambient sources).
-        /// </summary>
-        public void SpawnPulse(Vector3 origin, float maxRadius, Color color)
+        public void SpawnWave(Vector3 origin, float maxRadius, Color color, float loudness = 1f)
         {
-            if (_activePulses.Count >= _maxPulses)
+            if (_activeWaves.Count >= _maxWaves)
             {
-                // Remove the oldest pulse to make room
-                _activePulses.RemoveAt(0);
+                _activeWaves.RemoveAt(0);
             }
 
-            var pulse = new SonarPulse(
-                origin,
+            var wave = new SoundWave(
+                new Vector2(origin.x, origin.z),
+                0f,
+                0f,
                 maxRadius,
-                _defaultExpansionSpeed,
-                _defaultRingThickness,
-                _defaultMaxAge,
-                color
-            );
+                Mathf.Clamp01(loudness),
+                0,
+                0f,
+                Mathf.PI * 2f,
+                color);
 
-            _activePulses.Add(pulse);
+            _activeWaves.Add(wave);
         }
 
-        /// <summary>
-        /// Push all active pulse data to global shader properties.
-        /// The sonar shader reads these arrays to render the rings.
-        /// </summary>
         private void PushToShader()
         {
-            int count = Mathf.Min(_activePulses.Count, _maxPulses);
+            int count = Mathf.Min(_activeArcs.Count, _maxArcs);
 
             for (int i = 0; i < count; i++)
             {
-                var p = _activePulses[i];
-                _origins[i] = new Vector4(p.Origin.x, p.Origin.y, p.Origin.z, 0);
-                _radii[i] = p.CurrentRadius;
-                _thickness[i] = p.RingThickness;
-                _fades[i] = p.FadeFactor;
-                _colors[i] = new Vector4(p.Color.r, p.Color.g, p.Color.b, p.Color.a);
+                var arc = _activeArcs[i];
+                _arcOrigins[i] = new Vector4(arc.Center.x, 0f, arc.Center.y, 0f);
+                _arcRadii[i] = arc.Radius;
+                _arcAngles[i] = new Vector4(arc.StartAngle, arc.EndAngle, 0f, 0f);
+                _arcFades[i] = arc.Fade;
+                _arcColors[i] = new Vector4(arc.Color.r, arc.Color.g, arc.Color.b, arc.Color.a);
             }
 
-            // Zero out unused slots
-            for (int i = count; i < _maxPulses; i++)
+            for (int i = count; i < _maxArcs; i++)
             {
-                _origins[i] = Vector4.zero;
-                _radii[i] = 0f;
-                _thickness[i] = 0f;
-                _fades[i] = 0f;
-                _colors[i] = Vector4.zero;
+                _arcOrigins[i] = Vector4.zero;
+                _arcRadii[i] = 0f;
+                _arcAngles[i] = Vector4.zero;
+                _arcFades[i] = 0f;
+                _arcColors[i] = Vector4.zero;
             }
 
-            Shader.SetGlobalInt(PulseCountId, count);
-            Shader.SetGlobalVectorArray(PulseOriginsId, _origins);
-            Shader.SetGlobalFloatArray(PulseRadiiId, _radii);
-            Shader.SetGlobalFloatArray(PulseThicknessId, _thickness);
-            Shader.SetGlobalFloatArray(PulseFadesId, _fades);
-            Shader.SetGlobalVectorArray(PulseColorsId, _colors);
+            Shader.SetGlobalInt(ArcCountId, count);
+            Shader.SetGlobalVectorArray(ArcOriginsId, _arcOrigins);
+            Shader.SetGlobalFloatArray(ArcRadiiId, _arcRadii);
+            Shader.SetGlobalVectorArray(ArcAnglesId, _arcAngles);
+            Shader.SetGlobalFloatArray(ArcFadesId, _arcFades);
+            Shader.SetGlobalVectorArray(ArcColorsId, _arcColors);
+            Shader.SetGlobalFloat(ArcThicknessId, _defaultArcThickness);
         }
     }
 }

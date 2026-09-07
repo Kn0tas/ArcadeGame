@@ -1,0 +1,892 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sound Wave Reflection Debugger</title>
+  <style>
+    body { margin: 0; padding: 20px; font-family: monospace; background: #1a1a1a; color: #eee; }
+    canvas { border: 1px solid #444; display: block; background: #0a0a0a; cursor: crosshair; }
+    .controls { margin: 20px 0; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+    button { padding: 8px 16px; background: #333; color: #eee; border: 1px solid #666; cursor: pointer; }
+    button:hover { background: #444; }
+    button.active { background: #226; border-color: #66f; }
+    .info { margin-top: 10px; font-size: 12px; }
+    input[type="range"] { width: 200px; }
+    label { display: inline-block; margin-right: 15px; }
+
+    #bakeOverlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.6);
+      z-index: 10;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 16px;
+      font-size: 14px;
+      color: #eee;
+    }
+    #bakeOverlay.visible { display: flex; }
+    #bakeBarWrap {
+      width: 320px;
+      height: 14px;
+      background: #333;
+      border: 1px solid #666;
+      border-radius: 4px;
+      overflow: hidden;
+    }
+    #bakeBar {
+      height: 100%;
+      width: 0%;
+      background: #4af;
+      transition: width 0.1s linear;
+    }
+  </style>
+</head>
+<body>
+  <h2>Sound Wave Reflection Debugger</h2>
+  <div class="controls">
+    <button id="addWall">Add Wall</button>
+    <button id="clearWalls">Clear Walls</button>
+    <button id="pulse">Pulse (Space)</button>
+    <button id="toggleVisibility">Show Visibility</button>
+    <button id="toggleVisGraph">Show Vis Graph</button>
+    <button id="resetSources">Reset Sources</button>
+    <label>Radius: <input type="range" id="radiusSlider" min="10" max="3000" value="100"></label>
+    <label>Reflections: <input type="range" id="reflectionsSlider" min="1" max="5" value="2"></label>
+  </div>
+  <canvas id="canvas"></canvas>
+  <div class="info" id="info"></div>
+
+  <div id="bakeOverlay">
+    <div id="bakeLabel">Baking visibility…</div>
+    <div id="bakeBarWrap"><div id="bakeBar"></div></div>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    canvas.width = window.innerWidth - 40;
+    canvas.height = window.innerHeight - 200;
+
+    // === ROOM SCALE (defined early so BAKE_* constants can reference it) ===
+    const roomW = 42, roomH = 40;
+    const margin = 0.5;
+    const roomScale = Math.min(canvas.width * (1 - margin) / roomW, canvas.height * (1 - margin) / roomH);
+    const roomCx = canvas.width  / 2;
+    const roomCy = canvas.height / 2;
+
+    // === BAKE CONSTANTS ===
+    const BAKE_STEP          = roomScale;         // 1 world unit in pixels between samples
+    const BAKE_ALONG_OFFSET  = 0.5  * roomScale;  // start 0.5 wu in from endpoint
+    const BAKE_NORMAL_OFFSET = 0.25 * roomScale;  // lift 0.25 wu off the wall surface
+
+    const state = {
+      soundSource: { x: canvas.width / 2, y: canvas.height / 2 },
+      walls: [],
+      pulseRadius: 0,
+      maxRadius: document.getElementById('radiusSlider').valueAsNumber,
+      maxReflections: document.getElementById('reflectionsSlider').valueAsNumber,
+      arcs: [],
+      sources: [],
+      selectedWall: null,
+      selectedEndpoint: null,
+      dragOffset: null,
+      creatingWall: false,
+      wallStart: null,
+      showVisibility: false,
+      showVisGraph: false,
+      visibleSegments: [],
+      baking: false,
+    };
+
+    // === FPS COUNTER ===
+    const fpsWindow = [];
+    const FPS_SAMPLES = 30;
+    let lastFrameTime = null;
+
+    function updateFps() {
+      const now = performance.now();
+      if (lastFrameTime !== null) {
+        fpsWindow.push(1000 / (now - lastFrameTime));
+        if (fpsWindow.length > FPS_SAMPLES) fpsWindow.shift();
+      }
+      lastFrameTime = now;
+    }
+
+    function getFps() {
+      if (fpsWindow.length === 0) return 0;
+      return fpsWindow.reduce((a, b) => a + b, 0) / fpsWindow.length;
+    }
+
+    // === GEOMETRY UTILITIES ===
+    function vec2(x, y) { return { x, y }; }
+    function add(a, b) { return vec2(a.x + b.x, a.y + b.y); }
+    function sub(a, b) { return vec2(a.x - b.x, a.y - b.y); }
+    function mul(v, s) { return vec2(v.x * s, v.y * s); }
+    function dot(a, b) { return a.x * b.x + a.y * b.y; }
+    function len(v) { return Math.sqrt(v.x * v.x + v.y * v.y); }
+    function norm(v) { const l = len(v); return l > 0 ? vec2(v.x / l, v.y / l) : vec2(0, 0); }
+    function dist(a, b) { return len(sub(b, a)); }
+    function cross2d(a, b) { return a.x * b.y - a.y * b.x; }
+
+    function mirrorPoint(P, A, B) {
+      const AB = sub(B, A);
+      const AP = sub(P, A);
+      const t = dot(AP, AB) / dot(AB, AB);
+      const closest = add(A, mul(AB, t));
+      return add(closest, mul(sub(closest, P), 1));
+    }
+
+    function lineCircleIntersection(A, B, center, radius) {
+      const AB = sub(B, A);
+      const AC = sub(center, A);
+      const t_closest = dot(AC, AB) / dot(AB, AB);
+      const closest = add(A, mul(AB, t_closest));
+      const distToLine = dist(closest, center);
+      if (distToLine > radius + 1e-6) return [];
+      const halfChord = Math.sqrt(Math.max(0, radius * radius - distToLine * distToLine));
+      const denominator = dot(AB, AB);
+      if (denominator < 1e-6) return [];
+      const t1 = t_closest - halfChord / len(AB);
+      const t2 = t_closest + halfChord / len(AB);
+      const p1 = add(A, mul(AB, t1));
+      const p2 = add(A, mul(AB, t2));
+      return [
+        { t: t1, point: p1, angle: Math.atan2(p1.y - center.y, p1.x - center.x) },
+        { t: t2, point: p2, angle: Math.atan2(p2.y - center.y, p2.x - center.x) }
+      ];
+    }
+
+    function rayCircleIntersection(rayOrigin, rayDir, center, radius) {
+      const oc = sub(rayOrigin, center);
+      const d = norm(rayDir);
+      const a = dot(d, d);
+      const b = 2 * dot(oc, d);
+      const c = dot(oc, oc) - radius * radius;
+      const disc = b * b - 4 * a * c;
+      if (disc < 0) return null;
+      const t1 = (-b - Math.sqrt(disc)) / (2 * a);
+      const t2 = (-b + Math.sqrt(disc)) / (2 * a);
+      const t = t1 >= 0 ? t1 : (t2 >= 0 ? t2 : null);
+      return t !== null ? add(rayOrigin, mul(d, t)) : null;
+    }
+
+    function lineRayIntersection(A, B, rayOrigin, rayDir) {
+      const AB = sub(B, A);
+      const AC = sub(rayOrigin, A);
+      const det = AB.x * (-rayDir.y) - AB.y * (-rayDir.x);
+      if (Math.abs(det) < 1e-6) return undefined;
+      const t = (AC.x * (-rayDir.y) - AC.y * (-rayDir.x)) / det;
+      const u = (AB.x * AC.y - AB.y * AC.x) / det;
+      if (u >= 0) return t;
+      return undefined;
+    }
+
+    // === VISIBILITY UTILITIES ===
+    function segmentsProperlyIntersect(A, B, C, D) {
+      const d1 = cross2d(sub(D, C), sub(A, C));
+      const d2 = cross2d(sub(D, C), sub(B, C));
+      const d3 = cross2d(sub(B, A), sub(C, A));
+      const d4 = cross2d(sub(B, A), sub(D, A));
+      return (
+        ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
+        ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))
+      );
+    }
+
+    function lineLineIntersection(A, B, rayOrigin, rayDir) {
+      const AB = sub(B, A);
+      const AC = sub(rayOrigin, A);
+      const det = AB.x * (-rayDir.y) - AB.y * (-rayDir.x);
+      if (Math.abs(det) < 1e-6) return null; // parallel
+      const t = (AC.x * (-rayDir.y) - AC.y * (-rayDir.x)) / det;
+      const u = (AB.x * AC.y - AB.y * AC.x) / det;
+      return { t, u };
+    }
+
+    function computeShadowInterval(source, blocker, wall) {
+      const A = wall.a, B = wall.b;
+      const AB = sub(B, A);
+
+      const rA = lineLineIntersection(A, B, source, sub(blocker.a, source));
+      const rB = lineLineIntersection(A, B, source, sub(blocker.b, source));
+      if (!rA || !rB) return null; // parallel wall or degenerate
+
+      const { t: tA, u: uA } = rA;
+      const { t: tB, u: uB } = rB;
+
+      // Both rays point away from the wall — no shadow
+      if (uA < 0 && uB < 0) return null;
+
+      // Blocker endpoint must be in front of the wall (u > 1 means wall line is farther than endpoint)
+      // If u is between 0..1 the wall is CLOSER than the blocker → blocker is behind the wall → skip
+      const validA = uA >= 1;
+      const validB = uB >= 1;
+      if (!validA && !validB) return null;
+
+      let t0, t1;
+
+      if (validA && validB) {
+        // Both endpoints in front of wall: shadow is between the two projections
+        t0 = Math.max(0, Math.min(tA, tB));
+        t1 = Math.min(1, Math.max(tA, tB));
+      } else if (validA) {
+        // blocker.b is behind (or sideways): shadow extends from tA toward the
+        // wall boundary on the side AWAY from t_line_B
+        if (tB < tA) { t0 = Math.max(0, tA); t1 = 1; }
+        else          { t0 = 0; t1 = Math.min(1, tA); }
+      } else {
+        // blocker.a is behind: mirror case
+        if (tA < tB) { t0 = Math.max(0, tB); t1 = 1; }
+        else          { t0 = 0; t1 = Math.min(1, tB); }
+      }
+
+      if (t1 - t0 < 1e-6) return null;
+
+      // Confirm the blocker actually lies between source and the wall midpoint
+      const mid = add(A, mul(AB, (t0 + t1) * 0.5));
+      if (!segmentsProperlyIntersect(source, mid, blocker.a, blocker.b)) return null;
+
+      return [t0, t1];
+    }
+
+    function subtractInterval(visible, shadow) {
+      const [s0, s1] = shadow;
+      const result = [];
+      for (const [v0, v1] of visible) {
+        if (s1 <= v0 || s0 >= v1) {
+          result.push([v0, v1]);
+        } else {
+          if (v0 < s0 - 1e-6) result.push([v0, s0]);
+          if (v1 > s1 + 1e-6) result.push([s1, v1]);
+        }
+      }
+      return result;
+    }
+
+    function distToSegment(P, A, B) {
+      const AB = sub(B, A);
+      const t = Math.max(0, Math.min(1, dot(sub(P, A), AB) / dot(AB, AB)));
+      const closest = add(A, mul(AB, t));
+      return dist(P, closest);
+    }
+
+    function distToWall(wall, point) {
+      const normalDistCpToLine = dot(sub(wall.a, point), wall.normal);
+      // Check if the perpendicular from point to the line of the wall intersects the wall segment; if not, use distance to endpoints.
+      // check if the point + mul(wall.normal, -1*normalDistCpToLine) lies between wall.a and wall.b
+      const AB = sub(wall.b, wall.a);
+      const AP = sub(add(point, mul(wall.normal, -1 * normalDistCpToLine)), wall.a);
+      const t = dot(AP, AB) / dot(AB, AB);
+
+      if (t < 0 || t > 1) {
+        return Math.min(dist(point, wall.a), dist(point, wall.b));
+      } else {
+        return Math.abs(normalDistCpToLine);
+      }
+    }  
+
+    function computeSignedDistanceToWall(wall, point) {
+      return dot(wall.normal, sub(point, wall.a));
+    }
+
+    function isWallBehindVirtualWall(source, virtualSource, wall) {
+      const signedDistanceA = computeSignedDistanceToWall(virtualSource.wall, wall.a);
+      const signedDistanceB = computeSignedDistanceToWall(virtualSource.wall, wall.b);
+      
+      if ((signedDistanceA < 0 && signedDistanceB > 0) || (signedDistanceA > 0 && signedDistanceB < 0)) {
+        const sourceDistVirtual = distToWall(virtualSource.wall, source);
+        const sourceDistWall = distToWall(wall, source);
+        // If the source is closer to the virtual wall than the current wall, treat it as behind the virtual wall.
+        if (sourceDistVirtual > sourceDistWall - 1e-4) {
+          return true;
+        } 
+      }
+      if (dist(virtualSource.originalWall.a, wall.b) === 0 || dist(virtualSource.originalWall.b, wall.a) === 0) {
+        return signedDistanceA < 0 || signedDistanceB < 0;
+      }
+      return signedDistanceA < 0 && signedDistanceB < 0;
+    }
+
+    function coneClipping(wall, source, virtualSource) {
+      const A = wall.a, B = wall.b;
+      let u = [
+        lineRayIntersection(A, B, source, virtualSource.cone.startDir),
+        lineRayIntersection(A, B, source, virtualSource.cone.endDir)
+      ];
+      if (u.some(x => x === undefined)) {
+        const coneDir = norm(add(virtualSource.cone.startDir, virtualSource.cone.endDir));
+        const coneWidth = dot(coneDir, virtualSource.cone.startDir) - 1e-4;
+        if (dot(coneDir, norm(sub(A, source))) > coneWidth) u.push(0);
+        if (dot(coneDir, norm(sub(B, source))) > coneWidth) u.push(1);
+        u = u.filter(x => x !== undefined);
+        if (u.length < 2) return undefined;
+      }
+      u = [Math.min(...u), Math.max(...u)];
+      if (u[1] < 0 || u[0] > 1) return undefined;
+      return [Math.max(0, u[0]), Math.min(1, u[1])];
+    }
+
+    function getVisibleSubSegments(source, wall, allWalls, virtualSource = null) {
+      const A = wall.a, B = wall.b;
+      const AB = sub(B, A);
+      if (len(AB) < 1e-6) return [];
+      if (dot(wall.normal, sub(source, A)) <= 0) return [];
+
+      let visible = [[0, 1]];
+
+      if (virtualSource) {
+        if (virtualSource.originalWall === wall) return [];
+        const rNormal = virtualSource.originalWall.normal;
+        const rMid = mul(add(virtualSource.originalWall.a, virtualSource.originalWall.b), 0.5);
+        const wallMid = mul(add(wall.a, wall.b), 0.5);
+        const sideSource = dot(rNormal, sub(source, rMid));
+        const sideWall   = dot(rNormal, sub(wallMid, rMid));
+        if (Math.abs(sideWall) > 1e-4 && sideSource * sideWall > 0) return [];
+        const clipped = coneClipping(wall, source, virtualSource);
+        if (!clipped) return [];
+        visible = [clipped];
+      }
+
+      for (const blocker of allWalls) {
+        if (blocker === wall) continue;
+        if (virtualSource) {
+          if (virtualSource.originalWall === blocker) continue;
+          if (isWallBehindVirtualWall(source, virtualSource, blocker)) continue;
+        }
+        const shadow = computeShadowInterval(source, blocker, wall);
+        if (shadow) visible = subtractInterval(visible, shadow);
+        if (visible.length === 0) break;
+      }
+
+      return visible
+        .filter(([t0, t1]) => t1 - t0 > 1e-4)
+        .map(([t0, t1]) => ({
+          a: add(A, mul(AB, t0)),
+          b: add(A, mul(AB, t1)),
+          normal: wall.normal
+        }));
+    }
+
+    // === WALL-TO-WALL VISIBILITY BAKE ===
+    function wallsAreVisible(A, B, allWalls) {
+      const AB = sub(A.b, A.a);
+      const wallLen = len(AB);
+      const dir = norm(AB);
+      const normalOffset = mul(A.normal, BAKE_NORMAL_OFFSET);
+
+      // Midpoint fallback for very short walls
+      const samples = wallLen < BAKE_ALONG_OFFSET
+        ? [mul(add(A.a, A.b), 0.5)]
+        : [];
+
+      let d = BAKE_ALONG_OFFSET;
+      while (d < wallLen) {
+        samples.push(add(A.a, mul(dir, d)));
+        d += BAKE_STEP;
+      }
+
+      for (const onWall of samples) {
+        const samplePoint = add(onWall, normalOffset);
+        const segs = getVisibleSubSegments(samplePoint, B, allWalls);
+        if (segs.length > 0) return true;
+      }
+      return false;
+    }
+
+    // Async bake with progress bar
+    function rebakeVisibility(walls) {
+      return new Promise(resolve => {
+        const overlay  = document.getElementById('bakeOverlay');
+        const bar      = document.getElementById('bakeBar');
+        const label    = document.getElementById('bakeLabel');
+        const total    = walls.length * walls.length;
+        let   done     = 0;
+        let   i        = 0;
+
+        // Initialise visibleWalls on every wall
+        walls.forEach(w => { w.visibleWalls = []; });
+
+        overlay.classList.add('visible');
+        state.baking = true;
+
+        function processRow() {
+          if (i >= walls.length) {
+            overlay.classList.remove('visible');
+            state.baking = false;
+            resolve();
+            return;
+          }
+          const A = walls[i];
+          for (let j = 0; j < walls.length; j++) {
+            const B = walls[j];
+            if (A !== B && wallsAreVisible(A, B, walls)) {
+              A.visibleWalls.push(B);
+            }
+            done++;
+          }
+          i++;
+          const pct = (done / total * 100).toFixed(1);
+          bar.style.width = pct + '%';
+          label.textContent = `Baking visibility… ${pct}%`;
+          setTimeout(processRow, 0); // yield to browser between rows
+        }
+
+        processRow();
+      });
+    }
+
+    // === REFLECTION ALGORITHM ===
+    function computeReflections(source, maxRadius, wall, reflectionLevel = 0, virtualSource = undefined, originalWall = undefined) {
+      if (reflectionLevel >= state.maxReflections) return { arcs: [], sources: [] };
+      const emitSource = reflectionLevel < state.maxReflections - 1;
+
+      let A = wall.a;
+      let B = wall.b;
+      let AB = sub(B, A);
+
+      const cross = cross2d(sub(A, source), sub(B, source));
+      if (Math.abs(cross) < 1) return { arcs: [], sources: [] };
+
+      const toSource = norm(sub(source, A));
+      if (dot(wall.normal, toSource) < 0) return { arcs: [], sources: [] };
+
+      const C = source;
+      const Cp = mirrorPoint(C, A, B);
+
+      let t = [0, 1];
+      if (virtualSource) {
+        t = coneClipping(wall, C, virtualSource);
+        if (!t) return { arcs: [], sources: [] };
+        A = add(A, mul(AB, t[0]));
+        B = add(A, mul(AB, t[1] - t[0]));
+      }
+
+      const distCpToLine = distToWall({a:A, b:B, normal: wall.normal}, Cp);
+
+      const arcs = [];
+      const sources = [];
+
+      const I = rayCircleIntersection(C, sub(A, C), C, maxRadius);
+      const J = rayCircleIntersection(C, sub(B, C), C, maxRadius);
+
+      let isAlive = false;
+
+      if (maxRadius > distCpToLine) {
+        let G, H;
+        const intersectionsD = lineCircleIntersection(A, B, Cp, maxRadius);
+        const onWallD = intersectionsD.sort((a, b) => a.t - b.t);
+        if (onWallD.length >= 2) {
+          G = (onWallD[0].t >= 0 && onWallD[0].t <= 1) ? onWallD[0].point : undefined;
+          H = (onWallD[onWallD.length - 1].t >= 0 && onWallD[onWallD.length - 1].t <= 1) ? onWallD[onWallD.length - 1].point : undefined;
+        }
+        const startPoint = G || rayCircleIntersection(Cp, sub(A, Cp), Cp, maxRadius);
+        const endPoint   = H || rayCircleIntersection(Cp, sub(B, Cp), Cp, maxRadius);
+
+        if (startPoint && endPoint && emitSource && I && J) {
+          const startAngle = Math.atan2(startPoint.y - Cp.y, startPoint.x - Cp.x);
+          const endAngle   = Math.atan2(endPoint.y   - Cp.y, endPoint.x   - Cp.x);
+          sources.push({
+            center: Cp,
+            radius: maxRadius,
+            startAngle,
+            endAngle,
+            wall: { a: A, b: B, normal: wall.normal },
+            originalWall: originalWall || wall,
+            reflectionLevel: reflectionLevel + 1,
+            cone: { startDir: norm(sub(startPoint, Cp)), endDir: norm(sub(endPoint, Cp)) },
+          });
+        }
+
+        if (G && I) {
+          arcs.push({
+            center: C, radius: maxRadius,
+            startAngle: Math.atan2(G.y - C.y, G.x - C.x),
+            endAngle:   Math.atan2(I.y - C.y, I.x - C.x),
+            reflectionLevel, color: 'rgba(255, 150, 100, 0.8)'
+          });
+          isAlive = true;
+        }
+
+        if (J && H) {
+          arcs.push({
+            center: C, radius: maxRadius,
+            startAngle: Math.atan2(J.y - C.y, J.x - C.x),
+            endAngle:   Math.atan2(H.y - C.y, H.x - C.x),
+            reflectionLevel, color: 'rgba(255, 150, 100, 0.8)'
+          });
+          isAlive = true;
+        }
+      } else {
+        if (I && J) {
+          arcs.push({
+            center: C, radius: maxRadius,
+            startAngle: Math.atan2(J.y - C.y, J.x - C.x),
+            endAngle:   Math.atan2(I.y - C.y, I.x - C.x),
+            reflectionLevel, color: 'rgba(255, 255, 100, 0.8)'
+          });
+          isAlive = true;
+        }
+      }
+
+      return { arcs, sources, isAlive };
+    }
+
+    // === RENDERING ===
+    function drawWall(wall, isSelected = false) {
+      ctx.strokeStyle = isSelected ? '#ff6600' : '#666';
+      ctx.lineWidth = isSelected ? 3 : 2;
+      ctx.beginPath();
+      ctx.moveTo(wall.a.x, wall.a.y);
+      ctx.lineTo(wall.b.x, wall.b.y);
+      ctx.stroke();
+
+      const mid = mul(add(wall.a, wall.b), 0.5);
+      const n   = wall.normal;
+      ctx.strokeStyle = '#445566';
+      ctx.lineWidth   = 1;
+      ctx.beginPath();
+      ctx.moveTo(mid.x, mid.y);
+      ctx.lineTo(mid.x + n.x * 12, mid.y + n.y * 12);
+      ctx.stroke();
+
+      ctx.fillStyle = isSelected ? '#ff6600' : '#999';
+      ctx.fillRect(wall.a.x - 4, wall.a.y - 4, 8, 8);
+      ctx.fillRect(wall.b.x - 4, wall.b.y - 4, 8, 8);
+    }
+
+    function drawVisibleSegment(seg) {
+      ctx.strokeStyle = 'rgba(80, 255, 120, 0.85)';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(seg.a.x, seg.a.y);
+      ctx.lineTo(seg.b.x, seg.b.y);
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(80, 255, 120, 0.9)';
+      ctx.beginPath(); ctx.arc(seg.a.x, seg.a.y, 3, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(seg.b.x, seg.b.y, 3, 0, Math.PI * 2); ctx.fill();
+    }
+
+    function drawVisibilityGraph() {
+      ctx.strokeStyle = 'rgba(100, 180, 255, 0.15)';
+      ctx.lineWidth = 1;
+      for (const wall of state.walls) {
+        const mA = mul(add(wall.a, wall.b), 0.5);
+        for (const other of (wall.visibleWalls || [])) {
+          const mB = mul(add(other.a, other.b), 0.5);
+          ctx.beginPath();
+          ctx.moveTo(mA.x, mA.y);
+          ctx.lineTo(mB.x, mB.y);
+          ctx.stroke();
+        }
+      }
+    }
+
+    // === EVENTS ===
+    canvas.addEventListener('mousedown', (e) => {
+      if (state.baking) return;
+      const rect = canvas.getBoundingClientRect();
+      const pos = vec2(e.clientX - rect.left, e.clientY - rect.top);
+
+      if (dist(pos, state.soundSource) < 10) {
+        state.dragOffset = sub(state.soundSource, pos);
+        return;
+      }
+      for (let i = 0; i < state.walls.length; i++) {
+        const wall = state.walls[i];
+        if (dist(pos, wall.a) < 8) { state.selectedWall = i; state.selectedEndpoint = 'a'; state.dragOffset = sub(wall.a, pos); return; }
+        if (dist(pos, wall.b) < 8) { state.selectedWall = i; state.selectedEndpoint = 'b'; state.dragOffset = sub(wall.b, pos); return; }
+      }
+      state.creatingWall = true;
+      state.wallStart = pos;
+    });
+
+    canvas.addEventListener('mousemove', (e) => {
+      if (state.baking) return;
+      const rect = canvas.getBoundingClientRect();
+      const pos = vec2(e.clientX - rect.left, e.clientY - rect.top);
+      if (state.dragOffset) {
+        if (state.selectedWall === null) {
+          state.soundSource = add(pos, state.dragOffset);
+        } else {
+          const wall = state.walls[state.selectedWall];
+          if (state.selectedEndpoint === 'a') wall.a = add(pos, state.dragOffset);
+          else wall.b = add(pos, state.dragOffset);
+        }
+      }
+      render();
+    });
+
+    canvas.addEventListener('mouseup', async (e) => {
+      if (state.baking) return;
+      if (state.creatingWall && state.wallStart) {
+        const rect = canvas.getBoundingClientRect();
+        const pos = vec2(e.clientX - rect.left, e.clientY - rect.top);
+        if (dist(state.wallStart, pos) > 10) {
+          const AB = sub(pos, state.wallStart);
+          const normal = norm(vec2(-AB.y, AB.x));
+          state.walls.push({ a: state.wallStart, b: pos, normal, visibleWalls: [] });
+          await rebakeVisibility(state.walls);
+        }
+        state.creatingWall = false;
+      }
+      const wasDraggingEndpoint = state.selectedWall !== null;
+      state.dragOffset = null;
+      state.selectedWall = null;
+      state.selectedEndpoint = null;
+      if (wasDraggingEndpoint) {
+        // Recompute normals for moved wall then rebake
+        state.walls.forEach(w => {
+          const AB = sub(w.b, w.a);
+          w.normal = norm(vec2(-AB.y, AB.x));
+        });
+        await rebakeVisibility(state.walls);
+      }
+      render();
+    });
+
+    document.getElementById('addWall').addEventListener('click', async () => {
+      const AB = sub(vec2(300, 100), vec2(100, 100));
+      const normal = norm(vec2(-AB.y, AB.x));
+      state.walls.push({ a: vec2(100, 100), b: vec2(300, 100), normal, visibleWalls: [] });
+      await rebakeVisibility(state.walls);
+      render();
+    });
+
+    document.getElementById('clearWalls').addEventListener('click', () => {
+      state.walls = [];
+      state.arcs = [];
+      state.visibleSegments = [];
+      render();
+    });
+
+    document.getElementById('pulse').addEventListener('click', () => {
+      if (state.baking) return;
+      state.pulseRadius = 0;
+      animate();
+    });
+
+    document.getElementById('toggleVisibility').addEventListener('click', (e) => {
+      state.showVisibility = !state.showVisibility;
+      e.target.classList.toggle('active', state.showVisibility);
+      render();
+    });
+
+    document.getElementById('toggleVisGraph').addEventListener('click', (e) => {
+      state.showVisGraph = !state.showVisGraph;
+      e.target.classList.toggle('active', state.showVisGraph);
+      render();
+    });
+
+    document.getElementById('radiusSlider').addEventListener('input', (e) => {
+      state.maxRadius = parseInt(e.target.value);
+    });
+
+    document.getElementById('reflectionsSlider').addEventListener('input', (e) => {
+      state.maxReflections = parseInt(e.target.value);
+    });
+
+    document.getElementById('resetSources').addEventListener('click', () => {
+      state.sources = soundSourceAsSource(state.soundSource);
+      render();
+    });
+
+    document.addEventListener('keydown', (e) => {
+      if (e.code === 'Space') { e.preventDefault(); document.getElementById('pulse').click(); }
+    });
+
+    function soundSourceAsSource(source) {
+      const sources = [];
+      state.walls.forEach(wall => {
+        const candidateWalls = wall.visibleWalls && wall.visibleWalls.length > 0
+          ? wall.visibleWalls : state.walls;
+        const subSegs = getVisibleSubSegments(state.soundSource, wall, candidateWalls);
+        subSegs.forEach(seg => {
+          state.visibleSegments.push(seg);
+          sources.push({ source: state.soundSource, wall: seg, originalWall: wall, reflectionLevel: 0, virtualSource: null });
+        });
+      });
+      return sources;
+    }
+
+    function animate() {
+      if (state.baking) return;
+      state.pulseRadius = state.maxRadius;
+      state.arcs = [];
+      state.visibleSegments = [];
+
+      const queue = [];
+
+      if (state.sources.length === 0) {
+        state.sources = soundSourceAsSource(state.soundSource);
+      }
+
+      queue.push(...state.sources);     
+
+      while (queue.length > 0) {
+        const item = queue.shift();
+        const { source, wall, originalWall, reflectionLevel, virtualSource } = item;
+        const result = computeReflections(source, state.pulseRadius, wall, reflectionLevel, virtualSource, originalWall);
+
+        if (reflectionLevel < state.maxReflections) state.arcs.push(...result.arcs);
+
+        if (result.isAlive === false) {
+          state.sources.splice(state.sources.indexOf(item), 1);
+        }
+
+        result.sources.forEach(newSource => {
+          const reflectorWall = newSource.originalWall;
+          const candidates = reflectorWall.visibleWalls && reflectorWall.visibleWalls.length > 0
+            ? reflectorWall.visibleWalls : state.walls;
+          candidates.forEach(nextWall => {
+            const subSegs = getVisibleSubSegments(newSource.center, nextWall, candidates, newSource);
+            subSegs.forEach(seg => {
+              const source = {
+                source: newSource.center,
+                wall: seg,
+                originalWall: nextWall,
+                reflectionLevel: reflectionLevel + 1,
+                virtualSource: { originalWall: newSource.originalWall, cone: newSource.cone }
+              }
+              if (!result.isAlive) {
+                state.sources.push(source);
+              }
+              queue.push(source);
+            });
+          });
+        });
+      }
+
+      render();
+      requestAnimationFrame(animate);
+    }
+
+    function normalizeAngle(angle) {
+      while (angle < 0) angle += Math.PI * 2;
+      while (angle >= Math.PI * 2) angle -= Math.PI * 2;
+      return angle;
+    }
+
+    function drawArc(center, radius, startAngle, endAngle, color) {
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      const start = normalizeAngle(startAngle);
+      const end   = normalizeAngle(endAngle);
+      const diff  = normalizeAngle(end - start);
+      const counterclockwise = diff > Math.PI;
+      ctx.arc(center.x, center.y, radius, startAngle, endAngle, counterclockwise);
+      ctx.stroke();
+    }
+
+    function drawVirtualSource(source) {
+      if (source.virtualSource) {
+        ctx.fillStyle = 'rgba(255, 100, 255, 0.8)';
+      } else {
+        ctx.fillStyle = 'rgba(255, 100, 100, 0.8)';
+      }
+
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = 'rgba(255, 100, 255, 0.8)';
+      ctx.beginPath();
+      ctx.arc(source.source.x, source.source.y, 6, 0, Math.PI * 2);
+      ctx.stroke();
+
+      if (source.virtualSource) {
+        const length = 12;
+        ctx.beginPath();
+        ctx.moveTo(source.source.x, source.source.y);
+        ctx.lineTo(source.source.x + source.virtualSource.cone.startDir.x * length, source.source.y + source.virtualSource.cone.startDir.y * length);
+        ctx.moveTo(source.source.x, source.source.y);
+        ctx.lineTo(source.source.x + source.virtualSource.cone.endDir.x * length, source.source.y + source.virtualSource.cone.endDir.y * length);
+        ctx.stroke();
+      }
+    }
+
+    function render() {
+      if (!state.pulseRadius) return;
+      updateFps();
+
+      ctx.fillStyle = '#0a0a0a';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      if (state.showVisGraph) drawVisibilityGraph();
+
+      state.walls.forEach((wall, i) => drawWall(wall, i === state.selectedWall));
+
+      if (state.showVisibility) state.visibleSegments.forEach(seg => drawVisibleSegment(seg));
+
+      ctx.fillStyle = '#ff3333';
+      ctx.beginPath();
+      ctx.arc(state.soundSource.x, state.soundSource.y, 6, 0, Math.PI * 2);
+      ctx.fill();
+
+      state.sources.forEach(source => drawVirtualSource(source));
+      state.arcs.forEach(arc => drawArc(arc.center, arc.radius, arc.startAngle, arc.endAngle, arc.color));
+
+      const avgVisWalls = state.walls.length > 0
+        ? (state.walls.reduce((s, w) => s + (w.visibleWalls ? w.visibleWalls.length : 0), 0) / state.walls.length).toFixed(1)
+        : '—';
+
+      document.getElementById('info').innerHTML = `
+        FPS: <b>${getFps().toFixed(1)}</b> |
+        Source: (${state.soundSource.x.toFixed(0)}, ${state.soundSource.y.toFixed(0)}) |
+        Walls: ${state.walls.length} |
+        Avg visible walls/wall: ${avgVisWalls} |
+        Visible segments: ${state.visibleSegments.length} |
+        Pulse Radius: ${state.pulseRadius.toFixed(0)} |
+        Arcs: ${state.arcs.length} |
+        Bounces: ${state.maxReflections} |
+        Virtual Sources: ${state.sources.length}
+      `;
+    }
+
+    // === ROOM SETUP ===
+    function w(x, z) { return vec2(roomCx + x * roomScale, roomCy - z * roomScale); }
+
+    const testRoomWalls = [
+      { a: w(-21, 20),  b: w( 21, 20), label: 'TOP'  },
+      { a: w( 21,-20),  b: w(-21,-20)  },
+      { a: w( 20, 20),  b: w( 20,-20)  },
+      { a: w(-20,-20),  b: w(-20, 20), label: 'LEFT'  },
+      { a: w(  8, 12),  b: w(  8,  4)  },
+      { a: w(  9, 12),  b: w(  8, 12)  },
+      { a: w(  9,  4),  b: w(  9, 12)  },
+      { a: w(  8,  4),  b: w(  9,  4)  },
+      { a: w( -5, -5),  b: w(-15, -5)  },
+      { a: w(-15, -5),  b: w(-15, -6)  },
+      { a: w(-15, -6),  b: w( -5, -6)  },
+      { a: w( -5, -6),  b: w( -5, -5)  },
+      { a: w( 12, -7),  b: w( 12,-13)  },
+      { a: w( 13, -7),  b: w( 12, -7)  },
+      { a: w( 13,-13),  b: w( 13, -7)  },
+      { a: w( 12,-13),  b: w( 13,-13)  }
+    ];
+
+    function computeNormals(walls) {
+      return walls.map(wall => {
+        const AB = sub(wall.b, wall.a);
+        const normal = norm(vec2(-AB.y, AB.x));
+        return { ...wall, normal, visibleWalls: [] };
+      });
+    }
+
+    function bakeWalls(walls) {
+      return computeNormals(walls);
+    }
+
+    // Init
+    state.walls.push(...bakeWalls(testRoomWalls));
+    state.soundSource = w(0, 0);
+
+    rebakeVisibility(state.walls).then(() => {
+      // Auto-pulse once baking is done
+      state.pulseRadius = state.maxRadius;
+      animate();
+    });
+  </script>
+</body>
+</html>
